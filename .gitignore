@@ -1,7 +1,6 @@
 __pycache__/
 *.pyc
 tetra_activiteit.csv
-tetra_web_settings.json
 _alarm.wav
 .DS_Store
 build/
