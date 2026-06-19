@@ -504,6 +504,19 @@ class MainWindow(QMainWindow):
     def _cycle_gain_mode(self):
         self._set_gain_mode((self._gain_mode + 1) % 3)
 
+    def keyPressEvent(self, e):
+        """Sneltoetsen — handig op een scherm zonder (werkende) touch:
+        m = rijmodus, b = band, g = gain-modus, s = geluid aan/uit,
+        r = reset ruisvloer, q of Esc = afsluiten."""
+        t = e.text().lower()
+        if   t == "m": self._cycle_mode()
+        elif t == "b": self._cycle_band()
+        elif t == "g": self._cycle_gain_mode()
+        elif t == "s": self._toggle_mute()
+        elif t == "r": self.det.reset_noise_floor()
+        elif t == "q" or e.key() == Qt.Key.Key_Escape: self.close()
+        else: super().keyPressEvent(e)
+
     def _apply_wfall_transform(self):
         freqs = self.det.freqs
         tr = QTransform()
