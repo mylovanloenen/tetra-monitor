@@ -52,20 +52,21 @@ def sys_font(size, bold=False):
 
 # ── Activiteitsbanner ───────────────────────────────────────────────────────
 class StatusBanner(QFrame):
-    def __init__(self):
+    def __init__(self, compact=False):
         super().__init__()
-        self.setFixedHeight(96)
+        self.compact = compact
+        self.setFixedHeight(46 if compact else 96)
         self._level = 0
         self._freq = 0.0
         self._db = 0.0
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 12, 20, 12)
-        lay.setSpacing(2)
+        lay.setContentsMargins(*((10, 3, 10, 3) if compact else (20, 12, 20, 12)))
+        lay.setSpacing(0 if compact else 2)
         self.title = QLabel("● GEEN ACTIVITEIT")
-        self.title.setFont(sys_font(20, bold=True))
+        self.title.setFont(sys_font(13 if compact else 20, bold=True))
         self.title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.detail = QLabel("Ruisvloer aan het meten…")
-        self.detail.setFont(sys_font(12))
+        self.detail.setFont(sys_font(8 if compact else 12))
         self.detail.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self.title)
         lay.addWidget(self.detail)
@@ -107,13 +108,15 @@ class ChannelBars(QWidget):
     N_BARS = 3
     N_SEG = 14
 
-    def __init__(self):
+    def __init__(self, compact=False):
         super().__init__()
+        self.compact = compact
+        self.N_SEG = 10 if compact else 14
         self._active = []
         self._total = 0
         self._soft = SOFT_THRESHOLD_DB
         self._hard = HARD_THRESHOLD_DB
-        self.setMinimumHeight(200)
+        self.setMinimumHeight(110 if compact else 200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def update_data(self, active, soft, hard):
@@ -127,8 +130,9 @@ class ChannelBars(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
         p.fillRect(0, 0, W, H, qc("panel"))
+        c = self.compact
 
-        p.setFont(sys_font(12, bold=True))
+        p.setFont(sys_font(9 if c else 12, bold=True))
         if self._total > 0:
             p.setPen(qc("green"))
             title = f"ACTIEVE EENHEDEN · {self._total}"
@@ -137,10 +141,10 @@ class ChannelBars(QWidget):
         else:
             p.setPen(qc("gray2"))
             title = "ACTIEVE EENHEDEN"
-        p.drawText(0, 4, W, 28, int(Qt.AlignmentFlag.AlignCenter), title)
+        p.drawText(0, 2, W, 20 if c else 28, int(Qt.AlignmentFlag.AlignCenter), title)
 
-        top = 38
-        label_h = 76
+        top = 22 if c else 38
+        label_h = 50 if c else 76
         bars_h = H - top - label_h
         seg_gap = 4
         sect_w = W / self.N_BARS
@@ -175,23 +179,24 @@ class ChannelBars(QWidget):
 
             lx = int(cx - sect_w / 2)
             lw = int(sect_w)
-            ly = H - label_h + 6
+            ly = H - label_h + (4 if c else 6)
+            r1, r2 = (17, 32) if c else (26, 49)     # rij-offsets db / pijl
             if freq is not None:
-                p.setFont(sys_font(15, bold=True)); p.setPen(col)
-                p.drawText(lx, ly, lw, 26,
+                p.setFont(sys_font(11 if c else 15, bold=True)); p.setPen(col)
+                p.drawText(lx, ly, lw, 18 if c else 26,
                            int(Qt.AlignmentFlag.AlignCenter), f"{freq:.3f} MHz")
-                p.setFont(sys_font(13, bold=True)); p.setPen(qc("gray1"))
-                p.drawText(lx, ly + 26, lw, 22,
+                p.setFont(sys_font(9 if c else 13, bold=True)); p.setPen(qc("gray1"))
+                p.drawText(lx, ly + r1, lw, 16 if c else 22,
                            int(Qt.AlignmentFlag.AlignCenter), f"+{level:.0f} dB")
                 arrow, ac = (("▲ nadert", qc("green")) if trend == 1 else
                              ("▼ gaat weg", qc("orange")) if trend == -1 else
                              ("► stabiel", qc("gray2")))
-                p.setFont(sys_font(12, bold=True)); p.setPen(ac)
-                p.drawText(lx, ly + 49, lw, 22,
+                p.setFont(sys_font(8 if c else 12, bold=True)); p.setPen(ac)
+                p.drawText(lx, ly + r2, lw, 16 if c else 22,
                            int(Qt.AlignmentFlag.AlignCenter), arrow)
             else:
-                p.setFont(sys_font(16, bold=True)); p.setPen(qc("gray3"))
-                p.drawText(lx, ly, lw, 28,
+                p.setFont(sys_font(12 if c else 16, bold=True)); p.setPen(qc("gray3"))
+                p.drawText(lx, ly, lw, 20 if c else 28,
                            int(Qt.AlignmentFlag.AlignCenter), "—")
         p.end()
 
@@ -315,9 +320,12 @@ class MainWindow(QMainWindow):
 
         root = QWidget(); self.setCentralWidget(root)
         outer = QVBoxLayout(root)
-        outer.setContentsMargins(12, 10, 12, 10); outer.setSpacing(10)
+        if self.compact:
+            outer.setContentsMargins(5, 4, 5, 4); outer.setSpacing(5)
+        else:
+            outer.setContentsMargins(12, 10, 12, 10); outer.setSpacing(10)
 
-        self.banner = StatusBanner()
+        self.banner = StatusBanner(compact=self.compact)
         outer.addWidget(self.banner)
 
         self._band_idx = self._init_band_idx
@@ -464,28 +472,29 @@ class MainWindow(QMainWindow):
 
     # ── Compacte weergave (klein scherm) ──
     def _build_compact(self, outer):
-        """Minimale weergave: 3 grote balken + grote tikknoppen, geen spectrum/
-        waterfall/geschiedenis → licht genoeg voor een klein scherm op de Pi."""
+        """Minimale weergave: 3 grote balken + tikknoppen, geen spectrum/
+        waterfall/geschiedenis → strak op een klein scherm (bv. 480×320)."""
         self._bands = list(BANDS)
-        self.bars = ChannelBars()
+        self.bars = ChannelBars(compact=True)
         outer.addWidget(self.bars, stretch=1)
 
-        row = QHBoxLayout(); row.setSpacing(6)
+        row = QHBoxLayout(); row.setSpacing(4)
         self.btn_mode = QPushButton();      self.btn_mode.clicked.connect(self._cycle_mode)
         self.btn_band = QPushButton("Band"); self.btn_band.clicked.connect(self._cycle_band)
         self.btn_gainmode = QPushButton("Gain"); self.btn_gainmode.clicked.connect(self._cycle_gain_mode)
         self.btn_mute = QPushButton();      self.btn_mute.clicked.connect(self._toggle_mute)
         for b in (self.btn_mode, self.btn_band, self.btn_gainmode, self.btn_mute):
-            b.setMinimumHeight(46)
+            b.setMinimumHeight(42)
+            b.setFont(sys_font(9, bold=True))
             b.setStyleSheet(
                 f"QPushButton {{ background:{C['panel']}; color:{C['gray1']}; "
-                f"border:1px solid {C['sep']}; border-radius:8px; padding:6px; font-weight:bold; }}"
+                f"border:1px solid {C['sep']}; border-radius:7px; padding:2px; }}"
                 f"QPushButton:pressed {{ background:{C['panel2']}; }}")
             row.addWidget(b)
         outer.addLayout(row)
 
         self.stat = QLabel("Opstarten…")
-        self.stat.setFont(sys_font(9)); self.stat.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stat.setFont(sys_font(8)); self.stat.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.stat.setStyleSheet(f"color:{C['gray2']};")
         outer.addWidget(self.stat)
 
@@ -538,7 +547,7 @@ class MainWindow(QMainWindow):
             if not self.compact: self.sl_gain.setEnabled(False)
         self.det.src.apply_gain()
         if self.compact:
-            self.btn_gainmode.setText("Gain\n" + ["Handmatig", "Auto-red.", "Vol-auto"][idx])
+            self.btn_gainmode.setText("Gain\n" + ["Hand", "Auto", "Vol"][idx])
 
     def _on_soft(self, v):
         self.det.soft_thr = v
@@ -573,11 +582,13 @@ class MainWindow(QMainWindow):
     def _update_mode_button(self):
         m = RIJMODI[self._mode_idx]
         col = C[MODE_COLORS[m["name"]]]
-        self.btn_mode.setText(f"Rijmodus:  {m['name']}")
+        pad = 2 if self.compact else 8
+        self.btn_mode.setText(("Modus\n" + m["name"]) if self.compact
+                              else f"Rijmodus:  {m['name']}")
         self.btn_mode.setStyleSheet(
             f"QPushButton {{ background:{C['panel']}; color:{col}; "
-            f"border:1px solid {col}; border-radius:8px; padding:8px; font-weight:bold; }}"
-            f"QPushButton:hover {{ background:{C['panel2']}; }}")
+            f"border:1px solid {col}; border-radius:7px; padding:{pad}px; font-weight:bold; }}"
+            f"QPushButton:pressed {{ background:{C['panel2']}; }}")
 
     def _to_custom(self):
         # Handmatig aan een drempel draaien → de modus wordt Custom.
@@ -591,8 +602,9 @@ class MainWindow(QMainWindow):
         _, center = self._bands[idx]
         self.det.retune(center)
         if self.compact:
-            name = self._bands[idx][0]
-            self.btn_band.setText("Band\n" + " ".join(name.split(" ")[:2]))
+            nm = self._bands[idx][0]
+            ud = "U" if nm.startswith("Uplink") else "D"
+            self.btn_band.setText(f"Band\n{ud} {self._bands[idx][1]:.1f}")
             return
         self._apply_wfall_transform()
         self.spec.setXRange(self.det.freqs[0], self.det.freqs[-1])
@@ -603,17 +615,18 @@ class MainWindow(QMainWindow):
         self._update_mute_button()
 
     def _update_mute_button(self):
+        pad = 2 if self.compact else 7
         if self.det.muted:
-            self.btn_mute.setText("🔇 Gedempt")
+            self.btn_mute.setText("Geluid\nuit" if self.compact else "🔇 Gedempt")
             self.btn_mute.setStyleSheet(
                 f"QPushButton {{ background:{C['panel']}; color:{C['gray2']}; "
-                f"border:1px solid {C['gray2']}; border-radius:8px; padding:7px; }}")
+                f"border:1px solid {C['gray2']}; border-radius:7px; padding:{pad}px; font-weight:bold; }}")
         else:
-            self.btn_mute.setText("🔊 Geluid aan")
+            self.btn_mute.setText("Geluid\naan" if self.compact else "🔊 Geluid aan")
             self.btn_mute.setStyleSheet(
                 f"QPushButton {{ background:{C['panel']}; color:{C['gray1']}; "
-                f"border:1px solid {C['sep']}; border-radius:8px; padding:7px; }}"
-                f"QPushButton:hover {{ background:{C['panel2']}; }}")
+                f"border:1px solid {C['sep']}; border-radius:7px; padding:{pad}px; font-weight:bold; }}"
+                f"QPushButton:pressed {{ background:{C['panel2']}; }}")
 
     def _tick(self):
         if self.compact:
