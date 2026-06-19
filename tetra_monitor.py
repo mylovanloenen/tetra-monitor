@@ -287,9 +287,10 @@ class Slider(QWidget):
 
 # ── Hoofdvenster ────────────────────────────────────────────────────────────
 class MainWindow(QMainWindow):
-    def __init__(self, detector: Detector):
+    def __init__(self, detector: Detector, compact=False):
         super().__init__()
         self.det = detector
+        self.compact = compact          # alleen 3 balken (licht, voor klein scherm)
         self.det.on_detection = self._on_detection
         self._pending = []   # detecties uit detector-thread, in GUI-thread verwerkt
 
@@ -308,7 +309,8 @@ class MainWindow(QMainWindow):
         self._custom           = {"soft": s["custom_soft"], "hard": s["custom_hard"]}
 
         self.setWindowTitle(f"{APP_NAME} — TETRA activiteitsmonitor")
-        self.setMinimumSize(1080, 680)
+        if not self.compact:
+            self.setMinimumSize(1080, 680)
         self.setStyleSheet(f"QMainWindow, QWidget {{ background:{C['bg']}; color:{C['gray1']}; }}")
 
         root = QWidget(); self.setCentralWidget(root)
@@ -317,6 +319,19 @@ class MainWindow(QMainWindow):
 
         self.banner = StatusBanner()
         outer.addWidget(self.banner)
+
+        self._band_idx = self._init_band_idx
+        # Compacte modus: alleen banner + 3 balken + grote knoppen (klein scherm).
+        if self.compact:
+            self._build_compact(outer)
+            self._update_mute_button()
+            self._apply_mode(self._mode_idx)
+            self._set_gain_mode(self._gain_mode)
+            self._on_band(self._init_band_idx)
+            self.timer = QTimer(self)
+            self.timer.timeout.connect(self._tick)
+            self.timer.start(250)
+            return
 
         body = QHBoxLayout(); body.setSpacing(12)
         outer.addLayout(body, stretch=1)
@@ -447,6 +462,39 @@ class MainWindow(QMainWindow):
         lay = QVBoxLayout(f); lay.setContentsMargins(12, 9, 12, 9); lay.addWidget(widget)
         return f
 
+    # ── Compacte weergave (klein scherm) ──
+    def _build_compact(self, outer):
+        """Minimale weergave: 3 grote balken + grote tikknoppen, geen spectrum/
+        waterfall/geschiedenis → licht genoeg voor een klein scherm op de Pi."""
+        self._bands = list(BANDS)
+        self.bars = ChannelBars()
+        outer.addWidget(self.bars, stretch=1)
+
+        row = QHBoxLayout(); row.setSpacing(6)
+        self.btn_mode = QPushButton();      self.btn_mode.clicked.connect(self._cycle_mode)
+        self.btn_band = QPushButton("Band"); self.btn_band.clicked.connect(self._cycle_band)
+        self.btn_gainmode = QPushButton("Gain"); self.btn_gainmode.clicked.connect(self._cycle_gain_mode)
+        self.btn_mute = QPushButton();      self.btn_mute.clicked.connect(self._toggle_mute)
+        for b in (self.btn_mode, self.btn_band, self.btn_gainmode, self.btn_mute):
+            b.setMinimumHeight(46)
+            b.setStyleSheet(
+                f"QPushButton {{ background:{C['panel']}; color:{C['gray1']}; "
+                f"border:1px solid {C['sep']}; border-radius:8px; padding:6px; font-weight:bold; }}"
+                f"QPushButton:pressed {{ background:{C['panel2']}; }}")
+            row.addWidget(b)
+        outer.addLayout(row)
+
+        self.stat = QLabel("Opstarten…")
+        self.stat.setFont(sys_font(9)); self.stat.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.stat.setStyleSheet(f"color:{C['gray2']};")
+        outer.addWidget(self.stat)
+
+    def _cycle_band(self):
+        self._on_band((self._band_idx + 1) % len(self._bands))
+
+    def _cycle_gain_mode(self):
+        self._set_gain_mode((self._gain_mode + 1) % 3)
+
     def _apply_wfall_transform(self):
         freqs = self.det.freqs
         tr = QTransform()
@@ -471,24 +519,26 @@ class MainWindow(QMainWindow):
     def _set_gain_mode(self, idx):
         """0 = Handmatig, 1 = Auto-reductie (software), 2 = Volautomatisch (tuner)."""
         self._gain_mode = idx
-        g = self.sl_gain.value()
+        g = self.det.agc_max if self.compact else self.sl_gain.value()
         if idx == 0:        # Handmatig
             self.det.auto_gain_reduction = False
             self.det.src.auto_gain = False
             self.det.src.gain_db = g
             self.det.agc_max = g
-            self.sl_gain.setEnabled(True)
+            if not self.compact: self.sl_gain.setEnabled(True)
         elif idx == 1:      # Auto-reductie: plafond = ingestelde gain
             self.det.auto_gain_reduction = True
             self.det.src.auto_gain = False
             self.det.src.gain_db = g
             self.det.agc_max = g
-            self.sl_gain.setEnabled(True)
+            if not self.compact: self.sl_gain.setEnabled(True)
         else:               # Volautomatisch: tuner regelt zelf
             self.det.auto_gain_reduction = False
             self.det.src.auto_gain = True
-            self.sl_gain.setEnabled(False)
+            if not self.compact: self.sl_gain.setEnabled(False)
         self.det.src.apply_gain()
+        if self.compact:
+            self.btn_gainmode.setText("Gain\n" + ["Handmatig", "Auto-red.", "Vol-auto"][idx])
 
     def _on_soft(self, v):
         self.det.soft_thr = v
@@ -513,8 +563,9 @@ class MainWindow(QMainWindow):
             if m["name"] == "Custom" else (m["soft"], m["hard"])
         # set_value blokkeert de signalen → _on_soft/_on_hard vuren niet (geen
         # ongewenste terugschakeling naar Custom); det dus zelf bijwerken.
-        self.sl_soft.set_value(soft)
-        self.sl_hard.set_value(hard)
+        if not self.compact:
+            self.sl_soft.set_value(soft)
+            self.sl_hard.set_value(hard)
         self.det.soft_thr = soft
         self.det.hard_thr = hard
         self._update_mode_button()
@@ -536,8 +587,13 @@ class MainWindow(QMainWindow):
             self._update_mode_button()
 
     def _on_band(self, idx):
+        self._band_idx = idx
         _, center = self._bands[idx]
         self.det.retune(center)
+        if self.compact:
+            name = self._bands[idx][0]
+            self.btn_band.setText("Band\n" + " ".join(name.split(" ")[:2]))
+            return
         self._apply_wfall_transform()
         self.spec.setXRange(self.det.freqs[0], self.det.freqs[-1])
         self.curve.setData(self.det.freqs, self.det.power)
@@ -560,6 +616,19 @@ class MainWindow(QMainWindow):
                 f"QPushButton:hover {{ background:{C['panel2']}; }}")
 
     def _tick(self):
+        if self.compact:
+            snap = self.det.snapshot_lite()
+            self.banner.update_state(snap["alarm_level"], snap["alarm_freq"],
+                                     snap["alarm_db"], snap["status"], snap["overload"])
+            self.bars.update_data(snap["active"], self.det.soft_thr, self.det.hard_thr)
+            extra = ""
+            if snap["haze_db"] > 0:
+                extra = f"  ·  ⚠ OVERSTUUR (+{snap['haze_db']:.0f} dB)"
+            if snap["blacklist"]:
+                extra += f"  ·  {snap['blacklist']} genegeerd"
+            self.stat.setText(snap["status"] + f"  ·  gain {snap['gain']:.0f} dB" + extra)
+            self._pending = []            # geen geschiedenis in compacte modus
+            return
         snap = self.det.snapshot()
         self.curve.setData(snap["freqs"], snap["power"])
         self.nf_line.setValue(snap["noise_floor"])
@@ -614,10 +683,10 @@ class MainWindow(QMainWindow):
 
     def _save_settings(self):
         st = self._settings
-        st.setValue("gain",      self.sl_gain.value())
+        st.setValue("gain",      self.det.agc_max if self.compact else self.sl_gain.value())
         st.setValue("soft_thr",  self.det.soft_thr)
         st.setValue("hard_thr",  self.det.hard_thr)
-        st.setValue("band_idx",  self.band.currentIndex())
+        st.setValue("band_idx",  self._band_idx)
         st.setValue("gain_mode", self._gain_mode)
         st.setValue("mode_idx",  self._mode_idx)
         st.setValue("custom_soft", self._custom["soft"])
@@ -650,8 +719,8 @@ def main():
     detector = Detector(source)
     detector.start()
 
-    win = MainWindow(detector)
-    win.show()
+    win = MainWindow(detector, compact=args.compact)
+    win.showFullScreen() if args.fullscreen else win.show()
     sys.exit(app.exec())
 
 

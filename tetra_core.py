@@ -144,6 +144,11 @@ def parse_args():
     p.add_argument("--device", type=int, default=0, help="Dongle index")
     p.add_argument("--extern", action="store_true",
                    help="rtl_tcp draait al; niet zelf starten/stoppen")
+    p.add_argument("--compact", action="store_true",
+                   help="Alleen de 3 balken tonen (geen spectrum/waterfall) — "
+                        "licht, voor een klein scherm op de Pi")
+    p.add_argument("--fullscreen", action="store_true",
+                   help="Venster fullscreen openen (handig op een klein scherm)")
     return p.parse_args()
 
 
