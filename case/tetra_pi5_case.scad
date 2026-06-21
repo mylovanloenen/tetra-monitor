@@ -24,7 +24,8 @@ wall    = 2.4;     // wanddikte
 base_t  = 2.8;     // bodemdikte
 tol     = 0.4;     // speling
 margin  = 3.5;     // rand binnen de wanden
-inner_h = 34;      // binnenhoogte (Pi + Active Cooler ≈ 30 mm + lucht)
+inner_h = 28;      // binnenhoogte — Pi + lage cooler + scherm erbovenop (CHECK
+                   // je werkelijke stapelhoogte: Pi + cooler + scherm)
 
 /* [Raspberry Pi 5] */
 pi_l   = 85;  pi_w = 56;
@@ -35,16 +36,17 @@ post_d = 6;  pilot = 2.3;
 /* [RTL-SDR dongle] */
 dl = 67;  dw = 27;  dh = 13;
 
-/* [Buck-converter — METEN en aanpassen!] */
-bk_l = 55;  bk_w = 35;  bk_h = 18;
-bk_hx = [3, 52];  bk_hy = [3, 32];   // montagegaten buck (pas aan / 0 = geen)
+/* [Buck-converter — 46(63) x 32 x 18 mm] */
+bk_l = 63;  bk_w = 32;  bk_h = 18;   // 63 = inclusief schroefklemmen
+bk_hx = [3, 60];  bk_hy = [3, 29];   // montagegaten buck (pas aan / bk_post=true)
 bk_post = false;                     // true = standoffs voor de buck
 
 /* [Connectoren] */
-dc_d   = 11.5;   // gat voor DC-barrel-jack (paneelmontage)
+dc_d   = 8;      // paneelgat voor 5.5x2.1 DC-barrel-jack (schroefdraad ~8 mm —
+                 // CHECK je jack; metalen paneeljacks zijn soms 11 mm)
 dc_z   = 12;     // hoogte van DC-gat boven de bodem
-sma_d  = 6.5;    // gat voor SMA-bulkhead
-sma_z  = 20;     // hoogte van SMA-gat boven de bodem
+sma_d  = 6.5;    // gat voor SMA-bulkhead (de antenne + 90°-adapter komt hierop)
+sma_z  = 16;     // hoogte van SMA-gat boven de bodem (dongle ligt laag)
 
 /* [Opties] */
 gap   = 7;       // ruimte tussen zones
