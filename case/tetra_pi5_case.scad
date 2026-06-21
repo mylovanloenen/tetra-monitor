@@ -44,24 +44,32 @@ plate_t  = 3;             // dikte bovenplaat
 
 /* [Connectoren] */
 dc_d = 8;    dc_z = 9;    // 5.5x2.1 barrel-jack paneelgat (check je jack: 8 of 11)
-sma_d = 6.5; sma_z = 9;   // SMA-bulkhead (antenne + 90°-adapter)
+sma_d = 6.5;             // SMA-bulkhead (antenne + 90°-adapter)
 
 /* [Opties] */
-vents = true;
+vents    = true;
+sma_top  = true;   // antenne uit de BOVENKANT (gat in de bovenplaat) i.p.v. zijwand
+shield   = true;   // sleuf voor een metalen schildplaatje tussen dongle en buck
+fan      = false;  // klein fannetje in de achterwand (krap: bak ~22 mm hoog → 20mm fan)
+fan_air  = 18;     // luchtgat fan
+fan_hole = 15.4;   // schroefgat-afstand (20 mm fan ≈ 15.4)
 
 // ── Afgeleide maten ──────────────────────────────────────────────────────────
+ant_strip = sma_top ? 14 : 0;           // strookje aan het eind: antenne uit de top
 inner_l = max(pi_l, dl, bk_l);          // 85
 inner_w = max(pi_w, dw + bk_w);         // 59 (dongle 27 + buck 32)
-box_l = inner_l + 2*margin + 2*wall;
+box_l = inner_l + 2*margin + 2*wall + ant_strip;
 box_w = inner_w + 2*margin + 2*wall;
 
 // hoekposten (binnen de wanden)
 cpost = [[wall+3, wall+3], [box_l-wall-3, wall+3],
          [wall+3, box_w-wall-3], [box_l-wall-3, box_w-wall-3]];
 
-// Pi gecentreerd op de bovenplaat
-pi_x = (box_l - pi_l)/2;
+// Pi aan één eind (Pi-zone); het antenne-strookje aan de andere kant
+pi_x = wall + margin;
 pi_y = (box_w - pi_w)/2;
+ant_x = box_l - ant_strip/2;            // midden van het antenne-strookje
+ant_y = box_w/2;
 // dongle + buck naast elkaar op de bodem
 dn_x = wall + margin;            dn_y = wall + margin;
 bk_x = wall + margin;            bk_y = dn_y + dw + 2;
@@ -90,15 +98,28 @@ module bottom() {
                     cylinder(d = 7, h = bottom_h);
                     translate([0,0,bottom_h-6]) cylinder(d = pilot, h = 6.2);
                 }
-            // lichte geleiders voor dongle en buck (klemt ze op hun plek)
-            translate([dn_x-1, dn_y+dw+0.5, base_t]) cube([dl+2, 1.5, 5]);
+            // geleider-rib voor dongle/buck (klemt ze op hun plek)
+            translate([dn_x-1, dn_y+dw+0.5, base_t]) cube([dl+2, 1.2, 5]);
         }
+        // schildsleuf: gleuf in de bodem tussen dongle en buck voor een metalen
+        // plaatje (geaard → schermt de dongle af van de buck-schakelruis)
+        if (shield)
+            translate([dn_x, dn_y+dw+0.9, base_t-2]) cube([dl, 1.0, 2.2 + bottom_h - 3]);
         // DC-ingang (rechterwand, bij de buck)
         translate([box_l-wall-1, bk_y+bk_w/2, base_t+dc_z])
             rotate([0,90,0]) cylinder(d=dc_d, h=wall+2);
-        // SMA-bulkhead (achterwand, bij de dongle)
-        translate([dn_x+dl/2, box_w-wall-1, base_t+sma_z])
-            rotate([-90,0,0]) cylinder(d=sma_d, h=wall+2);
+        // SMA in de ZIJWAND (alleen als niet via de bovenkant)
+        if (!sma_top)
+            translate([dn_x+dl/2, box_w-wall-1, base_t+9])
+                rotate([-90,0,0]) cylinder(d=sma_d, h=wall+2);
+        // fan in de achterwand achter de dongle (optioneel, krap)
+        if (fan) {
+            fz = base_t + bottom_h/2;
+            translate([dn_x+dl/2, box_w-wall-1, fz]) rotate([-90,0,0]) cylinder(d=fan_air, h=wall+2);
+            for (a=[45:90:315])
+                translate([dn_x+dl/2 + fan_hole/2*cos(a), box_w-wall-1, fz + fan_hole/2*sin(a)])
+                    rotate([-90,0,0]) cylinder(d=2.4, h=wall+2);
+        }
         if (vents) { vent_grid(dn_x, dn_y, dl, dw); vent_grid(bk_x, bk_y, bk_l, bk_w); }
     }
 }
@@ -120,8 +141,11 @@ module top() {
             cylinder(d=screw_d, h=plate_t+0.2);
             cylinder(d1=5.2, d2=screw_d, h=1.6);
         }
-        // luchtgaten rond de Pi (cooler-airflow)
-        if (vents) for (gx=[8,box_l-8], gy=[box_w/2-12:8:box_w/2+12])
+        // SMA omhoog uit het antenne-strookje → antenne komt uit de BOVENKANT
+        if (sma_top)
+            translate([ant_x, ant_y, -0.1]) cylinder(d=sma_d, h=plate_t+0.2);
+        // luchtgaten langs de Pi (cooler-airflow)
+        if (vents) for (gx=[pi_x+6, pi_x+pi_l-6], gy=[box_w/2-12:8:box_w/2+12])
             translate([gx, gy, -0.1]) cylinder(d=4, h=plate_t+0.2);
     }
 }
