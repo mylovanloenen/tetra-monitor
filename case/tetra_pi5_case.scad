@@ -68,11 +68,13 @@ cpost = [[wall+3, wall+3], [box_l-wall-3, wall+3],
 // Pi aan één eind (Pi-zone); het antenne-strookje aan de andere kant
 pi_x = wall + margin;
 pi_y = (box_w - pi_w)/2;
-ant_x = box_l - ant_strip/2;            // midden van het antenne-strookje
-ant_y = box_w/2;
-// dongle + buck naast elkaar op de bodem
-dn_x = wall + margin;            dn_y = wall + margin;
-bk_x = wall + margin;            bk_y = dn_y + dw + 2;
+// dongle met z'n SMA-eind richting het antenne-strookje (hoge x); de 90°-adapter
+// gaat dáár recht omhoog, vrij van de Pi. Buck ernaast aan de andere y-kant.
+dn_x = box_l - wall - margin - dl;   dn_y = wall + margin;
+bk_x = wall + margin;                bk_y = dn_y + dw + 2;
+// antenne komt RECHT BOVEN de SMA van de dongle uit (90°-adapter omhoog)
+ant_x = dn_x + dl - 3;
+ant_y = dn_y + dw/2;
 
 module rrect(l, w, h) { linear_extrude(h) offset(2) offset(-2) square([l, w]); }
 
@@ -105,20 +107,20 @@ module bottom() {
         // plaatje (geaard → schermt de dongle af van de buck-schakelruis)
         if (shield)
             translate([dn_x, dn_y+dw+0.9, base_t-2]) cube([dl, 1.0, 2.2 + bottom_h - 3]);
-        // DC-ingang (rechterwand, bij de buck)
-        translate([box_l-wall-1, bk_y+bk_w/2, base_t+dc_z])
-            rotate([0,90,0]) cylinder(d=dc_d, h=wall+2);
-        // SMA in de ZIJWAND (alleen als niet via de bovenkant)
+        // DC-ingang in de achter(hoge-y)-wand bij de buck
+        translate([bk_x+bk_l/2, box_w-wall-1, base_t+dc_z])
+            rotate([-90,0,0]) cylinder(d=dc_d, h=wall+2);
+        // SMA in de zijwand (alleen als niet via de bovenkant)
         if (!sma_top)
-            translate([dn_x+dl/2, box_w-wall-1, base_t+9])
-                rotate([-90,0,0]) cylinder(d=sma_d, h=wall+2);
-        // fan in de achterwand achter de dongle (optioneel, krap)
+            translate([dn_x+dl/2, wall+1, base_t+9])
+                rotate([90,0,0]) cylinder(d=sma_d, h=wall+2);
+        // fan in de voor(lage-y)-wand achter de dongle (optioneel, krap)
         if (fan) {
             fz = base_t + bottom_h/2;
-            translate([dn_x+dl/2, box_w-wall-1, fz]) rotate([-90,0,0]) cylinder(d=fan_air, h=wall+2);
+            translate([dn_x+dl/2, wall+1, fz]) rotate([90,0,0]) cylinder(d=fan_air, h=wall+2);
             for (a=[45:90:315])
-                translate([dn_x+dl/2 + fan_hole/2*cos(a), box_w-wall-1, fz + fan_hole/2*sin(a)])
-                    rotate([-90,0,0]) cylinder(d=2.4, h=wall+2);
+                translate([dn_x+dl/2 + fan_hole/2*cos(a), wall+1, fz + fan_hole/2*sin(a)])
+                    rotate([90,0,0]) cylinder(d=2.4, h=wall+2);
         }
         if (vents) { vent_grid(dn_x, dn_y, dl, dw); vent_grid(bk_x, bk_y, bk_l, bk_w); }
     }
