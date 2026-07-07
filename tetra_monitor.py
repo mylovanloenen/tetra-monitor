@@ -483,7 +483,8 @@ class MainWindow(QMainWindow):
         self.btn_band = QPushButton("Band"); self.btn_band.clicked.connect(self._cycle_band)
         self.btn_gainmode = QPushButton("Gain"); self.btn_gainmode.clicked.connect(self._cycle_gain_mode)
         self.btn_mute = QPushButton();      self.btn_mute.clicked.connect(self._toggle_mute)
-        for b in (self.btn_mode, self.btn_band, self.btn_gainmode, self.btn_mute):
+        self.btn_bl = QPushButton();        self.btn_bl.clicked.connect(self._toggle_autobl)
+        for b in (self.btn_mode, self.btn_band, self.btn_gainmode, self.btn_mute, self.btn_bl):
             b.setMinimumHeight(42)
             b.setFont(sys_font(9, bold=True))
             b.setStyleSheet(
@@ -500,6 +501,9 @@ class MainWindow(QMainWindow):
 
     def _cycle_band(self):
         self._on_band((self._band_idx + 1) % len(self._bands))
+
+    def _toggle_autobl(self):
+        self.det.set_auto_blacklist(not self.det.auto_blacklist)
 
     def _cycle_gain_mode(self):
         self._set_gain_mode((self._gain_mode + 1) % 3)
@@ -648,6 +652,7 @@ class MainWindow(QMainWindow):
             self.banner.update_state(snap["alarm_level"], snap["alarm_freq"],
                                      snap["alarm_db"], snap["status"], snap["overload"])
             self.bars.update_data(snap["active"], self.det.soft_thr, self.det.hard_thr)
+            self.btn_bl.setText("Negeer\n" + ("aan" if self.det.auto_blacklist else "UIT"))
             extra = ""
             if snap["haze_db"] > 0:
                 extra = f"  ·  ⚠ OVERSTUUR (+{snap['haze_db']:.0f} dB)"
