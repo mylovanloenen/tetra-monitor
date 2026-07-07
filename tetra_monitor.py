@@ -288,7 +288,30 @@ class RtlTcpSource:
                 self._sock.close()
         except Exception:
             pass
-        self._open_socket()
+        self._sock = None
+        if self.extern:
+            self._open_socket()          # externe rtl_tcp draait zelf
+            return
+        # Eigen rtl_tcp opnieuw starten: na uitpluggen is dat proces gestopt en
+        # moet het de (terug-ingeplugde) dongle opnieuw pakken. connect() doet
+        # pkill + start + socket openen; dit faalt zolang de dongle weg is,
+        # zodat de herverbind-lus blijft proberen tot je 'm terugsteekt.
+        if self._proc:
+            try:
+                self._proc.terminate()
+                self._proc.wait(timeout=2)
+            except Exception:
+                try:
+                    self._proc.kill()
+                except Exception:
+                    pass
+            self._proc = None
+        self.connect()
+
+    def proc_dead(self):
+        """True als onze eigen rtl_tcp gestopt is (meestal: dongle losgekoppeld).
+        Bij externe rtl_tcp weten we dit niet → False."""
+        return (not self.extern) and self._proc is not None and self._proc.poll() is not None
 
     def apply_gain(self):
         if not self._sock:
@@ -386,6 +409,7 @@ class Detector(threading.Thread):
         self.auto_blacklist = True     # constante storingskanalen negeren
         self.channels: dict[float, Channel] = {}
         self.status = "Opstarten…"
+        self.connected = True          # False zodra de dongle wegvalt (voor de UI)
         self.n_frames = 0
         self.alarm_level = 0       # 0 = stil, 1 = oranje, 2 = rood
         self.alarm_freq = 0.0
@@ -476,14 +500,20 @@ class Detector(threading.Thread):
 
     def _reader(self):
         """Leest de dongle zo snel mogelijk leeg en houdt alléén het nieuwste
-        frame vast, zodat rtl_tcp niet vol loopt ongeacht hoe snel de FFT is."""
+        frame vast, zodat rtl_tcp niet vol loopt ongeacht hoe snel de FFT is.
+
+        Bevat ook de dongle-watchdog: bij 3.2 MS/s stroomt er continu data, dus
+        als er een paar seconden NIETS binnenkomt (of rtl_tcp is gestopt), is de
+        dongle losgekoppeld → herverbinden (en de UI toont de waarschuwing)."""
         buf = bytearray()
         need = FFT_SIZE * 2
+        last_data = time.time()
         while self.running:
             try:
                 chunk = self.src.recv(65536)
-                if not chunk:
-                    self._reconnect(); buf.clear(); continue
+                if not chunk:                          # socket dicht = rtl_tcp weg
+                    self._reconnect(); buf.clear(); last_data = time.time(); continue
+                last_data = time.time()
                 buf.extend(chunk)
                 if len(buf) >= need:
                     nframes = len(buf) // need
@@ -491,11 +521,14 @@ class Detector(threading.Thread):
                     self._latest = bytes(buf[start:start + need])
                     del buf[:nframes * need]           # alignment blijft (×need)
             except socket.timeout:
+                # Geen data: dongle eruit? rtl_tcp gestopt → meteen; anders zodra
+                # er >3 s niets meer kwam (normaal stroomt het continu).
+                if self.src.proc_dead() or time.time() - last_data > 3.0:
+                    self._reconnect(); buf.clear(); last_data = time.time()
                 continue
             except Exception as e:
                 print(f"[detector] reader: {e}")
-                self._reconnect(); buf.clear()
-                buf.clear()
+                self._reconnect(); buf.clear(); last_data = time.time()
 
     def _agc_step(self, peak, now):
         """Automatische gain-reductie met hysterese en cooldown."""
@@ -519,18 +552,27 @@ class Detector(threading.Thread):
             self.n_frames = 0
 
     def _reconnect(self):
-        self.status = "Herverbinden…"
+        self.connected = False
+        self.status = "⚠ SDR losgekoppeld — steek de dongle terug"
+        with self.lock:
+            self.channels.clear()      # oude balken niet laten hangen
+        first = True
         while self.running:
             try:
-                self.src.reconnect()
+                self.src.reconnect()   # herstart rtl_tcp + opent socket opnieuw
                 with self.lock:
                     self.n_frames = 0
                     self.channels.clear()
-                self.status = "Herverbonden"
+                self.connected = True
+                self.status = "Herverbonden — ruisvloer meten…"
+                print("[detector] dongle weer verbonden")
                 return
             except Exception as e:
-                print(f"[detector] herverbinden mislukt: {e}")
-                time.sleep(3)
+                if first:
+                    print(f"[detector] dongle weg, wacht op herverbinden: {e}")
+                    first = False
+                self.status = "⚠ SDR losgekoppeld — steek de dongle terug"
+                time.sleep(2)
 
     def _process(self, raw):
         iq = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 127.5) / 127.5
@@ -726,6 +768,7 @@ class Detector(threading.Thread):
                 "freqs": self.freqs.copy(),
                 "wfall": self.wfall.copy(),
                 "status": self.status,
+                "connected": self.connected,
                 "alarm_level": self.alarm_level,
                 "alarm_freq": self.alarm_freq,
                 "alarm_db": self.alarm_db,
@@ -777,11 +820,15 @@ class StatusBanner(QFrame):
         lay.addWidget(self.detail)
         self._apply(0)
 
-    def update_state(self, level, freq, db, status, overload=False):
-        if level != self._level or freq != self._freq:
-            self._apply(level)
-        self._level, self._freq, self._db = level, freq, db
-        if overload:
+    def update_state(self, level, freq, db, status, overload=False, connected=True):
+        eff_level = 2 if not connected else level     # losgekoppeld → rood
+        if eff_level != self._level or freq != self._freq:
+            self._apply(eff_level)
+        self._level, self._freq, self._db = eff_level, freq, db
+        if not connected:
+            self.title.setText("🔌 SDR LOSGEKOPPELD")
+            self.detail.setText("Steek de dongle terug — verbindt automatisch")
+        elif overload:
             self.title.setText("🚨 ZEER STERK SIGNAAL DICHTBIJ")
             self.detail.setText("Zender vlakbij — front-end overstuurt")
         elif level == 0:
@@ -1367,7 +1414,8 @@ class MainWindow(QMainWindow):
             # de detector berekent power/freqs/wfall toch al (ongewijzigd),
             # we tekenen ze hier gewoon niet.
             self.banner.update_state(snap["alarm_level"], snap["alarm_freq"],
-                                     snap["alarm_db"], snap["status"], snap["overload"])
+                                     snap["alarm_db"], snap["status"], snap["overload"],
+                                     snap["connected"])
             self.bars.update_data(snap["active"], self.det.soft_thr, self.det.hard_thr)
             self.btn_bl.setText("Negeer\n" + ("aan" if self.det.auto_blacklist else "UIT"))
             extra = ""
@@ -1386,7 +1434,8 @@ class MainWindow(QMainWindow):
         self.nf_line.setValue(snap["noise_floor"])
         self.img.setImage(snap["wfall"].T, autoLevels=False)
         self.banner.update_state(snap["alarm_level"], snap["alarm_freq"],
-                                 snap["alarm_db"], snap["status"], snap["overload"])
+                                 snap["alarm_db"], snap["status"], snap["overload"],
+                                 snap["connected"])
         self.bars.update_data(snap["active"], self.det.soft_thr, self.det.hard_thr)
 
         # Auto gain-reductie: schuif volgen + oversturing tonen.
