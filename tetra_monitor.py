@@ -60,6 +60,14 @@ SAMPLE_RATE   = 3_200_000      # 3.2 MS/s: breder venster (Blog V3 aan; bij
 FFT_SIZE      = 4096           # 0.78 kHz/bin: fijne resolutie + betere scheiding
                                # tussen naburige 25 kHz-kanalen (minder vals alarm)
 CHANNEL_KHZ   = 25.0           # TETRA-kanaalraster: 25 kHz
+# Afstem-offset: elke SDR heeft een neppiek (DC-spike/LO-lek) exact op de
+# afgestemde centerfrequentie. Zou je doelkanaal daar liggen, dan kan die piek
+# vals uitslaan (of, samen met lokale digitale ruis, een echt signaal
+# overstemmen). Door 12.5 kHz (halve kanaalbreedte) naast te stemmen valt de
+# spike op de kanaalgrens — tussen twee kanalen — en meet elk kanaal zelf
+# schoon. De weergegeven frequenties kloppen gewoon (freqs uit de werkelijk
+# afgestemde freq); dit is standaardpraktijk bij SDR-tools, geen extra logica.
+DC_OFFSET_HZ  = 12500
 WFALL_ROWS    = 120
 
 # Detectie: per kanaal integreren we de energie over de volle 25 kHz (zoals
@@ -252,7 +260,7 @@ class RtlTcpSource:
                 flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW
                 self._proc = subprocess.Popen(
                     [path, "-a", self.host, "-p", str(self.port),
-                     "-d", str(self.device), "-f", str(self.center_hz),
+                     "-d", str(self.device), "-f", str(self.center_hz + DC_OFFSET_HZ),
                      "-s", str(SAMPLE_RATE)],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     creationflags=flags)
@@ -269,7 +277,7 @@ class RtlTcpSource:
             self._sock.recv(12)   # dongle-info header
         except Exception:
             pass
-        _send_cmd(self._sock, 0x01, self.center_hz)
+        _send_cmd(self._sock, 0x01, self.center_hz + DC_OFFSET_HZ)
         _send_cmd(self._sock, 0x02, SAMPLE_RATE)
         _send_cmd(self._sock, 0x05, self.ppm)
         self.apply_gain()
@@ -298,7 +306,7 @@ class RtlTcpSource:
         self.center_hz = int(hz)
         if self._sock:
             try:
-                _send_cmd(self._sock, 0x01, self.center_hz)
+                _send_cmd(self._sock, 0x01, self.center_hz + DC_OFFSET_HZ)
             except Exception:
                 pass
 
@@ -394,8 +402,12 @@ class Detector(threading.Thread):
 
     # ── frequentie-helpers ──
     def _calc_freqs(self, center_hz):
-        return np.linspace((center_hz - SAMPLE_RATE / 2) / 1e6,
-                           (center_hz + SAMPLE_RATE / 2) / 1e6, FFT_SIZE)
+        # De hardware staat DC_OFFSET_HZ naast center afgestemd → de FFT-bins
+        # mappen op die werkelijk afgestemde freq, zodat de DC-spike op de
+        # kanaalgrens valt en de weergegeven frequenties toch kloppen.
+        tuned = center_hz + DC_OFFSET_HZ
+        return np.linspace((tuned - SAMPLE_RATE / 2) / 1e6,
+                           (tuned + SAMPLE_RATE / 2) / 1e6, FFT_SIZE)
 
     def _build_channels(self):
         """Bepaal één keer per afstemming de bin-indices van elk 25 kHz-kanaal,
