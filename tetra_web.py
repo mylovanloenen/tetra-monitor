@@ -87,6 +87,7 @@ class Controller:
         self.gain_mode = s.get("gain_mode", 1)
         self.gain      = s.get("gain", det.src.gain_db)   # ingestelde gain (dB)
         self.det.muted = s.get("muted", False)
+        self.det.set_auto_blacklist(s.get("auto_bl", True))
         self.det.src.gain_db = self.gain
         self.det.agc_max     = self.gain                  # plafond voor auto-reductie
         self.apply_mode(self.mode_idx)
@@ -105,7 +106,8 @@ class Controller:
             with open(SETTINGS_FILE, "w") as f:
                 json.dump({"mode_idx": self.mode_idx, "custom": self.custom,
                            "band_idx": self.band_idx, "gain_mode": self.gain_mode,
-                           "gain": self.gain, "muted": self.det.muted}, f)
+                           "gain": self.gain, "muted": self.det.muted,
+                           "auto_bl": self.det.auto_blacklist}, f)
         except OSError:
             pass
 
@@ -136,6 +138,8 @@ class Controller:
             self.det.reset_noise_floor()
         elif action == "blacklist":
             self.det.clear_blacklist()
+        elif action == "autobl":
+            self.det.set_auto_blacklist(not self.det.auto_blacklist)
         elif action in ("soft", "hard") and value is not None:
             v = max(1.0, min(80.0, float(value)))
             if action == "soft":
@@ -176,6 +180,7 @@ class Controller:
             "band":      BANDS[self.band_idx][0],
             "gainmode":  GAIN_MODES[self.gain_mode],
             "muted":     self.det.muted,
+            "auto_bl":   self.det.auto_blacklist,
         }
 
 
@@ -239,6 +244,7 @@ PAGE = r"""<!doctype html><html lang="nl"><head>
   <button onclick="cmd('mute')">Geluid<small id="mu">—</small></button>
   <button onclick="cmd('reset')">Reset ruisvloer<small>opnieuw inregelen</small></button>
   <button onclick="cmd('blacklist')">Wis negeerlijst<small id="bl">—</small></button>
+  <button onclick="cmd('autobl')">Auto-negeer<small id="ab">—</small></button>
 </div>
 <div id="sliders">
   <div class="sl"><label>Geel ≥</label>
@@ -312,6 +318,7 @@ function render(s){
   document.getElementById('g').textContent=s.gainmode;
   document.getElementById('mu').textContent=s.muted?'gedempt':'aan';
   document.getElementById('bl').textContent=s.blacklist+' genegeerd';
+  document.getElementById('ab').textContent=s.auto_bl?'aan':'UIT';
   document.getElementById('info').textContent=
     'actief: '+s.total+'   ·   gain '+Math.round(s.gain)+' dB   ·   drempel '+
     Math.round(s.soft)+'/'+Math.round(s.hard)+' dB'+(s.haze_db>0?'   ·   ⚠ vloer +'+s.haze_db+' dB':'');

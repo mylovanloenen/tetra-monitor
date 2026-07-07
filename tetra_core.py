@@ -437,6 +437,13 @@ class Detector(threading.Thread):
                 ch.blacklisted = False
                 ch.active_since = 0.0
 
+    def set_auto_blacklist(self, on):
+        """Auto-negeerlijst aan/uit. Bij UIT ook de huidige lijst wissen, anders
+        blijven al-genegeerde continue zenders (bv. 391.5 downlink) verborgen."""
+        self.auto_blacklist = bool(on)
+        if not self.auto_blacklist:
+            self.clear_blacklist()
+
     def blacklist_count(self):
         return sum(1 for ch in self.channels.values() if ch.blacklisted)
 
