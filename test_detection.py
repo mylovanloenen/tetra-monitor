@@ -117,7 +117,7 @@ def run():
     assert snap["alarm_level"] == 0 and nmax < det.soft_thr, "Vals alarm op ruis!"
 
     # 2) Breed TETRA-achtig signaal op +0.5 MHz → kanaal ~383.000
-    feed(det, tetra_frame, 25, dt=0.05, offset_hz=500_000)
+    feed(det, tetra_frame, 25, dt=0.05, offset_hz=500_000 - tm.DC_OFFSET_HZ)
     snap = det.snapshot()
     top_freq, top_lvl, _ = snap["active"][0]
     print(f"[signaal]   sterkste: {top_freq:.4f} MHz @ {top_lvl:.1f} dB, alarm: {snap['alarm_level']}")
@@ -125,7 +125,7 @@ def run():
     assert snap["alarm_level"] == 2, "Breed signaal gaf geen rood alarm!"
 
     # 3) Blijft >20 s continu aan → negeerlijst, alarm zakt naar 0
-    feed(det, tetra_frame, 60, dt=0.5, offset_hz=500_000)
+    feed(det, tetra_frame, 60, dt=0.5, offset_hz=500_000 - tm.DC_OFFSET_HZ)
     snap = det.snapshot()
     in_active = any(abs(f - 383.0) <= 0.0125 for f, _, _ in snap["active"])
     print(f"[blacklist] genegeerd: {snap['blacklist']}, alarm: {snap['alarm_level']}")
@@ -149,7 +149,7 @@ def run():
 
     # 6) Smalle toon (birdie) op +0.7 MHz → bezettingscheck negeert hem
     det = fresh()
-    feed(det, tone_frame, 25, dt=0.05, offset_hz=700_000)
+    feed(det, tone_frame, 25, dt=0.05, offset_hz=700_000 - tm.DC_OFFSET_HZ)
     snap = det.snapshot()
     tone_active = any(abs(f - 383.2) <= 0.02 for f, _, _ in snap["active"])
     print(f"[birdie]    toon actief: {tone_active}, alarm: {snap['alarm_level']}")
@@ -177,7 +177,7 @@ def run():
 
     # 9) Meerdere eenheden tegelijk → meerdere aparte actieve kanalen (balken)
     det = fresh()
-    offs = [-700_000, -200_000, 400_000, 900_000]   # 4 eenheden op eigen kanalen
+    offs = [o - tm.DC_OFFSET_HZ for o in (-700_000, -200_000, 400_000, 900_000)]  # 4 eenheden
     feed(det, multi_tetra_frame, 25, dt=0.05, offsets=offs)
     snap = det.snapshot()
     freqs = sorted(f for f, _, _ in snap["active"])
@@ -190,7 +190,7 @@ def run():
     #     burst allang voorbij is (passerend voertuig dat niet praat).
     det = fresh()
     feed(det, noise_frame, 5, dt=0.02)
-    feed(det, tetra_frame, 3, dt=0.02, offset_hz=-400_000)   # korte burst op 382.1
+    feed(det, tetra_frame, 3, dt=0.02, offset_hz=-400_000 - tm.DC_OFFSET_HZ)   # korte burst op 382.1
     feed(det, noise_frame, 40, dt=0.02)                      # burst voorbij
     snap = det.snapshot()
     held = any(abs(f - 382.1) <= 0.0125 for f, _, _ in snap["active"])
@@ -202,7 +202,7 @@ def run():
     def _lvl(s, f0=383.0):
         return next((l for f, l, _ in s["active"] if abs(f - f0) <= 0.0125), 0.0)
     det = fresh()
-    feed(det, tetra_frame, 10, dt=0.02, offset_hz=500_000)   # contact op 383.0
+    feed(det, tetra_frame, 10, dt=0.02, offset_hz=500_000 - tm.DC_OFFSET_HZ)   # contact op 383.0
     feed(det, noise_frame, 100, dt=0.02)                     # 2 s ruis (binnen hold 4 s)
     held_lvl = _lvl(det.snapshot())
     feed(det, noise_frame, 350, dt=0.02)                     # +7 s ruis (voorbij hold+release)
