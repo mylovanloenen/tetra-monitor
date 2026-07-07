@@ -354,6 +354,7 @@ class Detector(threading.Thread):
         self.src = source
         self.running = False
         self.lock = threading.Lock()
+        self._latest = None                # nieuwste ruwe frame (lees-thread → verwerking)
 
         # Blackman: lagere zijlobben dan Hanning → betere scheiding van naburige
         # kanalen, zodat een sterk signaal niet "lekt" naar de buren.
@@ -454,23 +455,46 @@ class Detector(threading.Thread):
     # ── hoofdlus ──
     def run(self):
         self.running = True
+        # Aparte lees-thread trekt de socket continu leeg en bewaart alleen het
+        # NIEUWSTE frame; déze thread verwerkt dat op z'n eigen tempo. Puur
+        # scheduling — geen wijziging aan de detectie-wiskunde: als de verwerking
+        # de volle framerate haalt (zoals op de Mac) is het gedrag identiek (elk
+        # frame op z'n beurt); haalt hij dat niet (zoals hier op de Pi 5 bleek:
+        # rtl_tcp's "ll+" liep op), dan slaan we tussenliggende frames over i.p.v.
+        # ze te laten opstapelen, zodat de weergave weer realtime is. De
+        # ballistiek is tijd-gebaseerd (dt), dus een wisselende framerate
+        # verstoort hold/release niet.
+        threading.Thread(target=self._reader, daemon=True).start()
+        last = None
+        while self.running:
+            raw = self._latest
+            if raw is None or raw is last:
+                time.sleep(0.003)
+                continue
+            last = raw
+            self._process(raw)
+
+    def _reader(self):
+        """Leest de dongle zo snel mogelijk leeg en houdt alléén het nieuwste
+        frame vast, zodat rtl_tcp niet vol loopt ongeacht hoe snel de FFT is."""
         buf = bytearray()
         need = FFT_SIZE * 2
         while self.running:
             try:
-                chunk = self.src.recv(8192)
+                chunk = self.src.recv(65536)
                 if not chunk:
-                    self._reconnect()
-                    buf.clear(); continue
+                    self._reconnect(); buf.clear(); continue
                 buf.extend(chunk)
-                while len(buf) >= need:
-                    raw = bytes(buf[:need]); del buf[:need]
-                    self._process(raw)
+                if len(buf) >= need:
+                    nframes = len(buf) // need
+                    start = (nframes - 1) * need       # begin van het laatste frame
+                    self._latest = bytes(buf[start:start + need])
+                    del buf[:nframes * need]           # alignment blijft (×need)
             except socket.timeout:
                 continue
             except Exception as e:
-                print(f"[detector] {e}")
-                self._reconnect()
+                print(f"[detector] reader: {e}")
+                self._reconnect(); buf.clear()
                 buf.clear()
 
     def _agc_step(self, peak, now):
