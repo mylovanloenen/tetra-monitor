@@ -537,26 +537,39 @@ class Detector(threading.Thread):
                 print(f"[detector] reader: {e}")
                 self._reconnect(); buf.clear(); last_data = time.time()
 
+    def _gain_step(self, new_gain):
+        """Past de gain toe en corrigeert de absolute ruisvloer/baseline direct
+        met het bekende dB-verschil, i.p.v. de hele kalibratie te resetten.
+
+        CFAR-detectie is een ratio (kanaal t.o.v. lokale ruis) en dus al
+        ongevoelig voor gain-stappen — die hoeft nooit opnieuw ingeregeld te
+        worden. Alleen de ABSOLUTE ruisvloer/baseline (voor de weergavelijn en
+        de 'waas'-detectie) verschuift direct mee met de hardware-gain. Zonder
+        deze correctie moest voorheen bij élke gain-stap de volle 60-frame
+        warmup opnieuw (met alarm_level hard op 0) — bij aanhoudende waas vlak
+        bij een sterke zender (bv. een bureau) stapelden die resets zich op tot
+        het alarm voortdurend aan/uit sprong, los van wat er echt gebeurde."""
+        delta = new_gain - self.src.gain_db
+        self.src.gain_db = new_gain
+        self.src.apply_gain()
+        if self.n_frames > WARMUP_FRAMES:     # tijdens warmup zelf niet nodig
+            self.noise_floor += delta
+            self.floor_baseline += delta
+
     def _agc_step(self, peak, now):
         """Automatische gain-reductie met hysterese en cooldown."""
         if now - self._agc_last < 0.4:
             return
         g = self.src.gain_db
         if peak >= 0.99 and g > 0:                # harde clipping → grote stap
-            self.src.gain_db = max(0.0, g - 6.0)
-            self.src.apply_gain()
+            self._gain_step(max(0.0, g - 6.0))
             self._agc_last = now
-            self.n_frames = 0                     # ruisvloer opnieuw inregelen
         elif (peak > 0.95 or self.haze) and g > 0:  # oversturing of brede waas → omlaag
-            self.src.gain_db = max(0.0, g - 3.0)
-            self.src.apply_gain()
+            self._gain_step(max(0.0, g - 3.0))
             self._agc_last = now
-            self.n_frames = 0
         elif peak < 0.5 and not self.haze and g < self.agc_max:  # ruim onder → omhoog
-            self.src.gain_db = min(self.agc_max, g + 1.0)
-            self.src.apply_gain()
+            self._gain_step(min(self.agc_max, g + 1.0))
             self._agc_last = now
-            self.n_frames = 0
 
     def _reconnect(self):
         self.connected = False
