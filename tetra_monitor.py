@@ -138,6 +138,14 @@ FLOOR_BASE_UP     = 0.00002    # baseline stijgt heel traag (~1 min) maar zakt s
 LOG_COOLDOWN_S    = 10.0       # min. tijd tussen logregels per kanaal
 SIREN_COOLDOWN_S  = 10.0
 
+# Batch-verwerking: de lees-thread bewaart ALLE frames sinds de vorige
+# verwerkingsronde (tot een plafond) en de FFT verwerkt ze in één numpy-batch.
+# Zo ziet een trage CPU (Pi 5) dezelfde ether als een snelle (Mac): een korte
+# uplink-burst die tussen twee rondes valt zit gewoon in de batch, i.p.v. dat
+# alleen het nieuwste frame overleeft en de rest op de vloer valt.
+MAX_BATCH_FRAMES  = 96         # plafond ≈ 123 ms ether (~0.8 MB); daarboven oudste weg
+STAT_INTERVAL_S   = 5.0        # elke zoveel s een dekkings-regel naar de log
+
 TCP_HOST = "127.0.0.1"
 
 # rtl_tcp zoekpaden (Homebrew Intel + Apple Silicon + Linux/Pi apt + PATH)
@@ -382,7 +390,13 @@ class Detector(threading.Thread):
         self.src = source
         self.running = False
         self.lock = threading.Lock()
-        self._latest = None                # nieuwste ruwe frame (lees-thread → verwerking)
+        self._acc = bytearray()            # lees-thread → verwerking: alle frames sinds vorige ronde
+        self._acc_lock = threading.Lock()
+        self.air_coverage = 0.0            # fractie van de ether die de FFT werkelijk ziet
+        self._stat_frames = 0
+        self._stat_batches = 0
+        self._stat_dropped = 0
+        self._stat_t0 = time.time()
 
         # Blackman: lagere zijlobben dan Hanning → betere scheiding van naburige
         # kanalen, zodat een sterk signaal niet "lekt" naar de buren.
@@ -486,28 +500,30 @@ class Detector(threading.Thread):
     # ── hoofdlus ──
     def run(self):
         self.running = True
-        # Aparte lees-thread trekt de socket continu leeg en bewaart alleen het
-        # NIEUWSTE frame; déze thread verwerkt dat op z'n eigen tempo. Puur
-        # scheduling — geen wijziging aan de detectie-wiskunde: als de verwerking
-        # de volle framerate haalt (zoals op de Mac) is het gedrag identiek (elk
-        # frame op z'n beurt); haalt hij dat niet (zoals hier op de Pi 5 bleek:
-        # rtl_tcp's "ll+" liep op), dan slaan we tussenliggende frames over i.p.v.
-        # ze te laten opstapelen, zodat de weergave weer realtime is. De
-        # ballistiek is tijd-gebaseerd (dt), dus een wisselende framerate
-        # verstoort hold/release niet.
+        # Aparte lees-thread trekt de socket continu leeg en bewaart ALLE frames
+        # sinds de vorige ronde; déze thread verwerkt ze in één numpy-batch. Op
+        # een snelle CPU (Mac) is de batch vrijwel altijd 1 frame en is het
+        # gedrag identiek aan frame-voor-frame; op een trage (Pi 5) groeit de
+        # batch, maar anders dan bij het oude "alleen het nieuwste frame" gaat
+        # er geen ether meer verloren: een burst die tussen twee rondes valt zit
+        # gewoon in de batch (detectie kijkt naar de batch-PIEK per kanaal). De
+        # ballistiek is tijd-gebaseerd (dt), dus een wisselende
+        # verwerkingssnelheid verstoort hold/release niet.
         threading.Thread(target=self._reader, daemon=True).start()
-        last = None
         while self.running:
-            raw = self._latest
-            if raw is None or raw is last:
+            with self._acc_lock:
+                raw = bytes(self._acc) if self._acc else None
+                self._acc.clear()
+            if raw is None:
                 time.sleep(0.003)
                 continue
-            last = raw
             self._process(raw)
 
     def _reader(self):
-        """Leest de dongle zo snel mogelijk leeg en houdt alléén het nieuwste
-        frame vast, zodat rtl_tcp niet vol loopt ongeacht hoe snel de FFT is.
+        """Leest de dongle zo snel mogelijk leeg en geeft alle volledige frames
+        door aan de verwerkingsthread (tot MAX_BATCH_FRAMES — daarboven vallen
+        de óúdste weg, zodat de weergave realtime blijft). Doet zelf geen zware
+        verwerking, dus de socket blijft leeg en rtl_tcp stapelt niets op.
 
         Bevat ook de dongle-watchdog: bij 3.2 MS/s stroomt er continu data, dus
         als er een paar seconden NIETS binnenkomt (of rtl_tcp is gestopt), is de
@@ -522,11 +538,16 @@ class Detector(threading.Thread):
                     self._reconnect(); buf.clear(); last_data = time.time(); continue
                 last_data = time.time()
                 buf.extend(chunk)
-                if len(buf) >= need:
-                    nframes = len(buf) // need
-                    start = (nframes - 1) * need       # begin van het laatste frame
-                    self._latest = bytes(buf[start:start + need])
-                    del buf[:nframes * need]           # alignment blijft (×need)
+                nframes = len(buf) // need
+                if nframes:
+                    take = nframes * need              # alleen hele frames door
+                    with self._acc_lock:
+                        self._acc.extend(buf[:take])
+                        over = len(self._acc) // need - MAX_BATCH_FRAMES
+                        if over > 0:                   # verwerking loopt achter:
+                            del self._acc[:over * need]  # oudste hele frames weg
+                            self._stat_dropped += over
+                    del buf[:take]                     # alignment blijft (×need)
             except socket.timeout:
                 # Geen data: dongle eruit? rtl_tcp gestopt → meteen; anders zodra
                 # er >3 s niets meer kwam (normaal stroomt het continu).
@@ -595,26 +616,41 @@ class Detector(threading.Thread):
                 time.sleep(2)
 
     def _process(self, raw):
-        iq = (np.frombuffer(raw, dtype=np.uint8).astype(np.float32) - 127.5) / 127.5
-        self.clip_peak = float(np.abs(iq).max())   # 1.0 = tegen clipping aan
+        # Batch: raw bevat 1..MAX_BATCH_FRAMES hele frames (op een snelle CPU
+        # meestal precies 1 → gedrag identiek aan het oude frame-voor-frame).
+        # Alle exponentiële middelingen gebruiken 1-(1-a)^n als batchgewicht:
+        # wiskundig gelijk aan n losse frame-updates, dus Mac en Pi middelen
+        # hetzelfde ongeacht hoeveel frames er per ronde binnenkomen.
+        need = FFT_SIZE * 2
+        n = len(raw) // need
+        frames = (np.frombuffer(raw, dtype=np.uint8)[:n * need]
+                  .astype(np.float32).reshape(n, need) - 127.5) / 127.5
+        self.clip_peak = float(np.abs(frames).max())   # 1.0 = tegen clipping aan
         # Gladgestreken clip-piek: één ruisspikkel telt niet, aanhoudende
         # oversturing (zender vlakbij) wél.
-        self.clip_avg = 0.85 * self.clip_avg + 0.15 * self.clip_peak
+        a_clip = 1.0 - 0.85 ** n
+        self.clip_avg = (1 - a_clip) * self.clip_avg + a_clip * self.clip_peak
         # Vasthoudtijd: elke keer dat de drempel gehaald wordt, verleng het venster.
         # Zo blijft de melding stabiel aan zolang je in de buurt van de zender bent,
         # ook al zakt de clip-piek af en toe net onder de drempel.
         if self.clip_avg > OVERLOAD_CLIP:
             self._overload_until = time.time() + OVERLOAD_HOLD_S
         self.overload = time.time() < self._overload_until
-        samples = (iq[0::2] + 1j * iq[1::2]) * self.window
-        spec = np.fft.fftshift(np.abs(np.fft.fft(samples, FFT_SIZE)))
-        lin = (spec / FFT_SIZE) ** 2 + 1e-20         # lineair vermogen per bin
+        samples = (frames[:, 0::2] + 1j * frames[:, 1::2]) * self.window
+        spec = np.fft.fftshift(np.abs(np.fft.fft(samples, axis=1)), axes=1)
+        lin_all = (spec / FFT_SIZE) ** 2 + 1e-20     # lineair vermogen per bin/frame
         # DC-spike (LO-lek op de centerfrequentie) dempen: vervang de centerbins
         # door de lokale mediaan, zodat hij geen vals signaal op center geeft.
         dc = self._dc_bin
-        ref = np.concatenate([lin[dc - 9:dc - 3], lin[dc + 4:dc + 10]])
-        if ref.size:
-            lin[dc - DC_NULL_BINS:dc + DC_NULL_BINS + 1] = np.median(ref)
+        ref = np.concatenate([lin_all[:, dc - 9:dc - 3],
+                              lin_all[:, dc + 4:dc + 10]], axis=1)
+        if ref.shape[1]:
+            lin_all[:, dc - DC_NULL_BINS:dc + DC_NULL_BINS + 1] = \
+                np.median(ref, axis=1, keepdims=True)
+        # Weergave/ruisvloer op het batch-GEMIDDELDE; de detectie kijkt daarnaast
+        # naar de batch-PIEK per kanaal, zodat een burst in één van de n frames
+        # niet wegmiddelt (dat was op de Pi het "pakt 'm laat/kort"-probleem).
+        lin = lin_all.mean(axis=0)
         power = 10.0 * np.log10(lin)                 # dB (== 20·log10(amplitude))
         now = time.time()
 
@@ -625,26 +661,33 @@ class Detector(threading.Thread):
             self.wfall = np.roll(self.wfall, 1, axis=0)
             self.wfall[0] = power
             self.power = power
-            self.n_frames += 1
+            self.n_frames += n
+            self._stat_frames += n
+            self._stat_batches += 1
+            self._stat_tick(now)
 
-            # Energie per kanaal (integratie over de volle 25 kHz).
-            ch_energy = np.array([lin[idx].sum() for _, idx in self._chan_idx])
+            # Energie per kanaal (integratie over de volle 25 kHz), per frame.
+            energies = np.stack([lin_all[:, idx].sum(axis=1)
+                                 for _, idx in self._chan_idx], axis=1)  # (n, kanalen)
+            ch_mean = energies.mean(axis=0)
+            ch_max = energies.max(axis=0)
 
             # noise_floor (dB) is alleen voor de oranje weergavelijn.
             nf_now = float(np.percentile(power, NOISE_PERCENTILE))
             if self.n_frames <= WARMUP_FRAMES:
-                a = 0.1
-                self.noise_floor = nf_now if self.n_frames == 1 else \
+                a = 1.0 - 0.9 ** n
+                self.noise_floor = nf_now if self.n_frames == n else \
                     (1 - a) * self.noise_floor + a * nf_now
-                self.ch_avg = ch_energy if self.ch_avg is None else \
-                    (1 - a) * self.ch_avg + a * ch_energy
-                self.ch_peak = ch_energy.copy() if self.ch_peak is None else \
-                    np.maximum(ch_energy, self.ch_peak)
+                self.ch_avg = ch_mean if self.ch_avg is None else \
+                    (1 - a) * self.ch_avg + a * ch_mean
+                self.ch_peak = ch_max.copy() if self.ch_peak is None else \
+                    np.maximum(ch_max, self.ch_peak)
                 self.floor_baseline = self.noise_floor
-                self.status = f"Ruisvloer meten  {int(100 * self.n_frames / WARMUP_FRAMES)}%"
+                self.status = f"Ruisvloer meten  {min(100, int(100 * self.n_frames / WARMUP_FRAMES))}%"
                 self.alarm_level = 0
                 return
-            self.noise_floor = 0.995 * self.noise_floor + 0.005 * nf_now
+            a_nf = 1.0 - 0.995 ** n
+            self.noise_floor = (1 - a_nf) * self.noise_floor + a_nf * nf_now
             # "Waas"-detectie: baseline volgt de stille vloer snel omlaag, maar
             # heel langzaam omhoog. Tilt de hele vloer plots op (zender vlakbij),
             # dan blijft de baseline laag en onthult het gat de oversturing.
@@ -661,10 +704,13 @@ class Detector(threading.Thread):
             self._last_t = now
 
             # Tijdmiddeling per kanaal (minder ruisvariantie → minder vals alarm).
-            self.ch_avg = (1 - CHAN_SMOOTH_A) * self.ch_avg + CHAN_SMOOTH_A * ch_energy
+            a_ch = 1.0 - (1.0 - CHAN_SMOOTH_A) ** n
+            self.ch_avg = (1 - a_ch) * self.ch_avg + a_ch * ch_mean
             # Piek-hold per kanaal: vangt korte registratiepulsjes (passerend
             # voertuig dat niet praat), zodat een burst van ~14 ms de drempel haalt.
-            self.ch_peak = np.maximum(ch_energy, self.ch_peak * math.exp(-dt / PEAK_TAU))
+            # De batch-piek zorgt dat zo'n puls óók telt als hij in een frame zat
+            # dat vroeger (Pi, "alleen nieuwste frame") overgeslagen zou zijn.
+            self.ch_peak = np.maximum(ch_max, self.ch_peak * math.exp(-dt / PEAK_TAU))
             self.status = "Scannen"
 
             # CFAR: lokale ruis uit de stabiele gemiddelde energie (mediaan buren).
@@ -675,6 +721,22 @@ class Detector(threading.Thread):
             level_peak = 10.0 * np.log10(self.ch_peak / local)
             levels = np.maximum(level_avg, level_peak)
             self._detect(levels, lin, now, dt)
+
+    def _stat_tick(self, now):
+        """Elke STAT_INTERVAL_S een dekkings-regel naar de log (journalctl/
+        terminal): hoeveel van de ether de FFT werkelijk verwerkt. 100% = alles;
+        lager betekent dat de CPU het tempo niet haalt en er frames gedropt
+        worden — precies het Mac-vs-Pi-verschil zichtbaar gemaakt."""
+        el = now - self._stat_t0
+        if el < STAT_INTERVAL_S:
+            return
+        self.air_coverage = min(1.0, self._stat_frames * FFT_SIZE / SAMPLE_RATE / el)
+        drop = f", {self._stat_dropped} frames gedropt" if self._stat_dropped else ""
+        print(f"[detector] {self._stat_frames / el:4.0f} frames/s in "
+              f"{self._stat_batches / el:3.0f} batches/s — "
+              f"dekking {100 * self.air_coverage:3.0f}%{drop}", flush=True)
+        self._stat_t0 = now
+        self._stat_frames = self._stat_batches = self._stat_dropped = 0
 
     @staticmethod
     def _cfar(ch_avg):
