@@ -853,6 +853,76 @@ class StatusBanner(QFrame):
         self.detail.setStyleSheet(f"color:{C['gray1']}; background:transparent;")
 
 
+# ── Enkele horizontale balk (compacte modus, klein scherm) ────────────────────
+class SingleBar(QWidget):
+    """Simpele weergave voor een klein scherm: één grote horizontale balk voor
+    het sterkste actieve kanaal, i.p.v. 3 aparte verticale balken."""
+
+    def __init__(self):
+        super().__init__()
+        self._freq = None
+        self._level = 0.0
+        self._trend = 0
+        self._soft = SOFT_THRESHOLD_DB
+        self._hard = HARD_THRESHOLD_DB
+        self.setMinimumHeight(90)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+
+    def update_data(self, active, soft, hard):
+        self._soft, self._hard = soft, hard
+        if active:
+            self._freq, self._level, self._trend = active[0]   # sterkste kanaal
+        else:
+            self._freq, self._level, self._trend = None, 0.0, 0
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+        p.fillRect(0, 0, W, H, qc("panel"))
+
+        margin = 16
+        bar_h = max(30, int(H * 0.42))
+        bar_y = 10
+        bar_w = W - 2 * margin
+        full = max(1.0, self._hard + 6.0)
+
+        active = self._freq is not None
+        col = qc("gray3")
+        pct = 0.0
+        if active:
+            pct = max(0.0, min(1.0, self._level / full))
+            col = (qc("red") if self._level >= self._hard
+                   else qc("yellow") if self._level >= self._soft else qc("green"))
+
+        track = QRectF(margin, bar_y, bar_w, bar_h)
+        tpath = QPainterPath(); tpath.addRoundedRect(track, 8, 8)
+        p.fillPath(tpath, qc("panel2"))
+        if pct > 0:
+            fill = QRectF(margin, bar_y, bar_w * pct, bar_h)
+            fpath = QPainterPath(); fpath.addRoundedRect(fill, 8, 8)
+            p.fillPath(fpath, col)
+
+        ty = bar_y + bar_h + 10
+        if active:
+            p.setFont(sys_font(20, bold=True)); p.setPen(col)
+            p.drawText(0, ty, W, 30, int(Qt.AlignmentFlag.AlignCenter),
+                       f"{self._freq:.3f} MHz")
+            arrow, ac = (("▲ nadert", qc("green")) if self._trend == 1 else
+                         ("▼ gaat weg", qc("orange")) if self._trend == -1 else
+                         ("► stabiel", qc("gray2")))
+            p.setFont(sys_font(14, bold=True)); p.setPen(qc("gray1"))
+            p.drawText(0, ty + 28, W, 24, int(Qt.AlignmentFlag.AlignCenter),
+                       f"+{self._level:.0f} dB")
+            p.setFont(sys_font(13, bold=True)); p.setPen(ac)
+            p.drawText(0, ty + 50, W, 22, int(Qt.AlignmentFlag.AlignCenter), arrow)
+        else:
+            p.setFont(sys_font(16, bold=True)); p.setPen(qc("gray3"))
+            p.drawText(0, ty, W, 30, int(Qt.AlignmentFlag.AlignCenter), "GEEN CONTACT")
+        p.end()
+
+
 # ── Kanaalbalken ────────────────────────────────────────────────────────────
 class ChannelBars(QWidget):
     """Top-actieve kanalen als grote verticale balken met richting-indicator.
@@ -1234,7 +1304,7 @@ class MainWindow(QMainWindow):
                        ("Downlink 389.9–393.1 (laag)", 391.5),
                        ("Downlink 390.9–394.1 (midden)", 392.5),
                        ("Downlink 391.9–395.1 (hoog)", 393.5)]
-        self.bars = ChannelBars(compact=True)
+        self.bars = SingleBar()
         outer.addWidget(self.bars, stretch=1)
 
         row = QHBoxLayout(); row.setSpacing(4)
