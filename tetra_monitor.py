@@ -876,6 +876,8 @@ class SingleBar(QWidget):
             self._freq, self._level, self._trend = None, 0.0, 0
         self.update()
 
+    N_SEG = 20   # aantal segmenten in de balk
+
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -889,20 +891,29 @@ class SingleBar(QWidget):
         full = max(1.0, self._hard + 6.0)
 
         active = self._freq is not None
-        col = qc("gray3")
-        pct = 0.0
-        if active:
-            pct = max(0.0, min(1.0, self._level / full))
-            col = (qc("red") if self._level >= self._hard
-                   else qc("yellow") if self._level >= self._soft else qc("green"))
+        level = self._level if active else 0.0
+        n_lit = int(min(self.N_SEG, max(0, level / full * self.N_SEG)))
 
-        track = QRectF(margin, bar_y, bar_w, bar_h)
-        tpath = QPainterPath(); tpath.addRoundedRect(track, 8, 8)
-        p.fillPath(tpath, qc("panel2"))
-        if pct > 0:
-            fill = QRectF(margin, bar_y, bar_w * pct, bar_h)
-            fpath = QPainterPath(); fpath.addRoundedRect(fill, 8, 8)
-            p.fillPath(fpath, col)
+        # Kleuren naar verhouding van het aantal segmenten (groen-geel-rood),
+        # zelfde verdeling als de rijmodus-drempels representeren.
+        n_green = round(self.N_SEG * 0.42)
+        n_yellow = round(self.N_SEG * 0.33)
+        n_red = self.N_SEG - n_green - n_yellow
+        on = [qc("green")] * n_green + [qc("yellow")] * n_yellow + [qc("red")] * n_red
+        off = ([QColor("#10261a")] * n_green + [QColor("#26220c")] * n_yellow
+               + [QColor("#2a1010")] * n_red)
+
+        gap = 4
+        seg_w = (bar_w - (self.N_SEG - 1) * gap) / self.N_SEG
+        col = qc("gray3")
+        if active:
+            col = (qc("red") if level >= self._hard
+                   else qc("yellow") if level >= self._soft else qc("green"))
+        for i in range(self.N_SEG):
+            x = margin + i * (seg_w + gap)
+            rect = QRectF(x, bar_y, seg_w, bar_h)
+            path = QPainterPath(); path.addRoundedRect(rect, 3, 3)
+            p.fillPath(path, on[i] if i < n_lit else off[i])
 
         ty = bar_y + bar_h + 10
         if active:
@@ -1132,6 +1143,8 @@ class MainWindow(QMainWindow):
         self.det.agc_max       = s["gain"]
         self._gain_mode        = s["gain_mode"]
         self._init_band_idx    = s["band_idx"]
+        if compact:
+            self._init_band_idx = 1   # compacte modus: altijd vast op 382.5 (Uplink midden)
         self._mode_idx         = s["mode_idx"]
         self._custom           = {"soft": s["custom_soft"], "hard": s["custom_hard"]}
 
@@ -1309,13 +1322,11 @@ class MainWindow(QMainWindow):
 
         row = QHBoxLayout(); row.setSpacing(4)
         self.btn_mode = QPushButton();      self.btn_mode.clicked.connect(self._cycle_mode)
-        self.btn_band = QPushButton("Band"); self.btn_band.clicked.connect(self._cycle_band)
         self.btn_gainmode = QPushButton("Gain"); self.btn_gainmode.clicked.connect(self._cycle_gain_mode)
         self.btn_mute = QPushButton();      self.btn_mute.clicked.connect(self._toggle_mute)
-        self.btn_bl = QPushButton();        self.btn_bl.clicked.connect(self._toggle_blacklist_btn)
-        for b in (self.btn_mode, self.btn_band, self.btn_gainmode, self.btn_mute, self.btn_bl):
-            b.setMinimumHeight(42)
-            b.setFont(sys_font(9, bold=True))
+        for b in (self.btn_mode, self.btn_gainmode, self.btn_mute):
+            b.setMinimumHeight(50)
+            b.setFont(sys_font(10, bold=True))
             b.setStyleSheet(
                 f"QPushButton {{ background:{C['panel']}; color:{C['gray1']}; "
                 f"border:1px solid {C['sep']}; border-radius:7px; padding:2px; }}"
@@ -1333,6 +1344,7 @@ class MainWindow(QMainWindow):
 
     def _cycle_gain_mode(self):
         self._set_gain_mode((self._gain_mode + 1) % 3)
+        self._save_settings()   # direct opslaan (kiosk krijgt vaak geen nette afsluiting)
 
     def _toggle_blacklist_btn(self):
         self.det.auto_blacklist = not getattr(self.det, "auto_blacklist", True)
@@ -1413,6 +1425,8 @@ class MainWindow(QMainWindow):
     # ── Rijmodus (Stad / Snelweg / Custom) ──
     def _cycle_mode(self):
         self._apply_mode((self._mode_idx + 1) % len(RIJMODI))
+        if self.compact:
+            self._save_settings()   # direct opslaan (kiosk krijgt vaak geen nette afsluiting)
 
     def _apply_mode(self, idx):
         self._mode_idx = idx
@@ -1432,8 +1446,9 @@ class MainWindow(QMainWindow):
         m = RIJMODI[self._mode_idx]
         col = C[MODE_COLORS[m["name"]]]
         pad = 2 if self.compact else 8
-        self.btn_mode.setText(("Modus\n" + m["name"]) if self.compact
-                              else f"Rijmodus:  {m['name']}")
+        self.btn_mode.setText(
+            f"{m['name']}\n{self.det.soft_thr:.0f}/{self.det.hard_thr:.0f} dB" if self.compact
+            else f"Rijmodus:  {m['name']}")
         self.btn_mode.setStyleSheet(
             f"QPushButton {{ background:{C['panel']}; color:{col}; "
             f"border:1px solid {col}; border-radius:7px; padding:{pad}px; font-weight:bold; }}"
@@ -1451,10 +1466,7 @@ class MainWindow(QMainWindow):
         _, center = self._bands[idx]
         self.det.retune(center)
         if self.compact:
-            name = self._bands[idx][0]
-            ud = "U" if name.startswith("Uplink") else "D"
-            self.btn_band.setText(f"Band\n{ud} {center:.1f}")
-            return
+            return   # geen band-knop meer in compacte modus (vast op 382.5)
         self._apply_wfall_transform()
         self.spec.setXRange(self.det.freqs[0], self.det.freqs[-1])
         self.curve.setData(self.det.freqs, self.det.power)
@@ -1462,6 +1474,8 @@ class MainWindow(QMainWindow):
     def _toggle_mute(self):
         self.det.muted = not self.det.muted
         self._update_mute_button()
+        if self.compact:
+            self._save_settings()   # direct opslaan (kiosk krijgt vaak geen nette afsluiting)
 
     def _update_mute_button(self):
         pad = 2 if self.compact else 7
@@ -1487,7 +1501,6 @@ class MainWindow(QMainWindow):
                                      snap["alarm_db"], snap["status"], snap["overload"],
                                      snap["connected"])
             self.bars.update_data(snap["active"], self.det.soft_thr, self.det.hard_thr)
-            self.btn_bl.setText("Negeer\n" + ("aan" if self.det.auto_blacklist else "UIT"))
             extra = ""
             if snap["haze_db"] > 0:
                 extra = f"  ·  ⚠ OVERSTUUR (+{snap['haze_db']:.0f} dB)"
