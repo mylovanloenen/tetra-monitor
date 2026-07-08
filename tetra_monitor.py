@@ -895,19 +895,19 @@ class Splash(QWidget):
         bw, gap = 12, 8
         total = len(heights) * bw + (len(heights) - 1) * gap
         x0 = cx - total / 2
-        cols = [qc("green"), qc("yellow"), qc("red")]
+        accent = qc("blue")                      # één kleur voor het hele opstartscherm
         for i, hh in enumerate(heights):
             x = x0 + i * (bw + gap)
             rect = QRectF(x, cy - hh / 2, bw, hh)
             path = QPainterPath(); path.addRoundedRect(rect, 3, 3)
-            p.fillPath(path, cols[i])
-        pen = QPen(qc("blue")); pen.setWidth(3)
+            p.fillPath(path, accent)
+        pen = QPen(accent); pen.setWidth(3)
         p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
         r = 34
         p.drawArc(QRectF(cx - r, cy - r - 6, 2 * r, 2 * r), 30 * 16, 120 * 16)
 
-        p.setFont(sys_font(24, bold=True)); p.setPen(qc("blue"))
-        p.drawText(0, int(H * 0.44), W, 34, int(Qt.AlignmentFlag.AlignCenter), "TetraMonitor")
+        p.setFont(sys_font(24, bold=True)); p.setPen(accent)
+        p.drawText(0, int(H * 0.44), W, 34, int(Qt.AlignmentFlag.AlignCenter), "priosense")
         p.setFont(sys_font(11)); p.setPen(qc("gray1"))
         p.drawText(0, int(H * 0.44) + 34, W, 22, int(Qt.AlignmentFlag.AlignCenter), self._text)
 
