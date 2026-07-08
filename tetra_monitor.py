@@ -128,6 +128,11 @@ OVERLOAD_CLIP     = 0.90       # gemiddelde clip-piek hierboven = oversturing
 # waterfall). CFAR is relatief en ziet dat niet, dus meten we de absolute stijging
 # van de ruisvloer t.o.v. de "normale" (stille) vloer.
 HAZE_RISE_DB      = 10.0       # ruisvloer zoveel dB boven normaal = sterk-signaal
+# Vasthoudtijd voor oversturing/waas: pal naast een sterke zender (politie/bureau)
+# schommelt de meting rond de drempel → zonder hold flikkert de melding aan/uit.
+# Zodra oversturing/waas gezien is, blijft de melding zo lang staan; elke nieuwe
+# detectie binnen dit venster verlengt 'm → stabiel aan terwijl je in de buurt bent.
+OVERLOAD_HOLD_S   = 5.0
 FLOOR_BASE_UP     = 0.00002    # baseline stijgt heel traag (~1 min) maar zakt snel,
                                # zodat een aanhoudende waas alarm blijft geven
 LOG_COOLDOWN_S    = 10.0       # min. tijd tussen logregels per kanaal
@@ -401,8 +406,10 @@ class Detector(threading.Thread):
         self.clip_peak = 0.0           # 1.0 = tegen clipping aan (per frame)
         self.clip_avg = 0.2            # gladgestreken clip-piek (voor oversturing)
         self.overload = False          # front-end overstuur via harde clipping
+        self._overload_until = 0.0     # vasthoudtijd (anti-flikker bij sterke zender)
         self.floor_baseline = None     # geleerde "normale" (stille) ruisvloer
         self.haze = False              # brede oversturing (ruisvloer opgetild)
+        self._haze_until = 0.0         # vasthoudtijd voor de waas
         self.haze_db = 0.0             # hoeveel dB de vloer boven normaal staat
         self._agc_last = 0.0
 
@@ -580,7 +587,12 @@ class Detector(threading.Thread):
         # Gladgestreken clip-piek: één ruisspikkel telt niet, aanhoudende
         # oversturing (zender vlakbij) wél.
         self.clip_avg = 0.85 * self.clip_avg + 0.15 * self.clip_peak
-        self.overload = self.clip_avg > OVERLOAD_CLIP
+        # Vasthoudtijd: elke keer dat de drempel gehaald wordt, verleng het venster.
+        # Zo blijft de melding stabiel aan zolang je in de buurt van de zender bent,
+        # ook al zakt de clip-piek af en toe net onder de drempel.
+        if self.clip_avg > OVERLOAD_CLIP:
+            self._overload_until = time.time() + OVERLOAD_HOLD_S
+        self.overload = time.time() < self._overload_until
         samples = (iq[0::2] + 1j * iq[1::2]) * self.window
         spec = np.fft.fftshift(np.abs(np.fft.fft(samples, FFT_SIZE)))
         lin = (spec / FFT_SIZE) ** 2 + 1e-20         # lineair vermogen per bin
@@ -628,7 +640,9 @@ class Detector(threading.Thread):
             else:
                 self.floor_baseline += FLOOR_BASE_UP * (self.noise_floor - self.floor_baseline)
             self.haze_db = self.noise_floor - self.floor_baseline
-            self.haze = self.haze_db > HAZE_RISE_DB
+            if self.haze_db > HAZE_RISE_DB:      # vasthoudtijd (anti-flikker)
+                self._haze_until = now + OVERLOAD_HOLD_S
+            self.haze = now < self._haze_until
             # Tijd sinds vorige frame (voor framerate-onafhankelijke ballistiek).
             dt = 0.0 if self._last_t is None else min(0.5, now - self._last_t)
             self._last_t = now
