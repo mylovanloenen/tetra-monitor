@@ -944,9 +944,18 @@ class SingleBar(QWidget):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     def update_data(self, active, soft, hard):
+        """"Plakt" aan het momenteel getoonde kanaal zolang dat nog in de actieve
+        lijst staat — ook als het even niet meer de allersterkste is. Zonder dit
+        springt de balk bij meerdere gelijktijdige zenders (bv. bij een bureau)
+        voortdurend tussen kanalen, wat als aan/uit-geflikker oogt. Pas wisselen
+        zodra het huidige kanaal écht stil is geworden (uit de lijst verdwijnt)."""
         self._soft, self._hard = soft, hard
-        if active:
-            self._freq, self._level, self._trend = active[0]   # sterkste kanaal
+        by_freq = {f: (f, lvl, tr) for f, lvl, tr in active}
+        cur = by_freq.get(self._freq) if self._freq is not None else None
+        if cur is not None:
+            self._freq, self._level, self._trend = cur
+        elif active:
+            self._freq, self._level, self._trend = active[0]   # nieuw sterkste kanaal
         else:
             self._freq, self._level, self._trend = None, 0.0, 0
         self.update()
