@@ -32,7 +32,7 @@ from datetime import datetime
 import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QRectF, QSettings, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QTransform
+from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QTransform
 from PyQt6.QtWidgets import (
     QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow,
     QMessageBox, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
@@ -867,6 +867,65 @@ class StatusBanner(QFrame):
         self.detail.setStyleSheet(f"color:{C['gray1']}; background:transparent;")
 
 
+# ── Opstart-splash (compacte modus) ──────────────────────────────────────────
+class Splash(QWidget):
+    """Vult het hele scherm bij het opstarten: logo + titel + voortgangsbalk
+    (verbinden met de SDR → ruisvloer inregelen). Verdwijnt zodra er gescand
+    wordt."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._pct = 0.0
+        self._text = "Opstarten…"
+
+    def set_state(self, pct, text):
+        self._pct = max(0.0, min(1.0, pct))
+        self._text = text
+        self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        W, H = self.width(), self.height()
+        p.fillRect(0, 0, W, H, qc("bg"))
+
+        # Logo: drie oplopende balkjes met een radiogolf-boog erboven.
+        cx, cy = W / 2, H * 0.30
+        heights = [16, 26, 36]
+        bw, gap = 12, 8
+        total = len(heights) * bw + (len(heights) - 1) * gap
+        x0 = cx - total / 2
+        cols = [qc("green"), qc("yellow"), qc("red")]
+        for i, hh in enumerate(heights):
+            x = x0 + i * (bw + gap)
+            rect = QRectF(x, cy - hh / 2, bw, hh)
+            path = QPainterPath(); path.addRoundedRect(rect, 3, 3)
+            p.fillPath(path, cols[i])
+        pen = QPen(qc("blue")); pen.setWidth(3)
+        p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+        r = 34
+        p.drawArc(QRectF(cx - r, cy - r - 6, 2 * r, 2 * r), 30 * 16, 120 * 16)
+
+        p.setFont(sys_font(24, bold=True)); p.setPen(qc("blue"))
+        p.drawText(0, int(H * 0.44), W, 34, int(Qt.AlignmentFlag.AlignCenter), "TetraMonitor")
+        p.setFont(sys_font(11)); p.setPen(qc("gray1"))
+        p.drawText(0, int(H * 0.44) + 34, W, 22, int(Qt.AlignmentFlag.AlignCenter), self._text)
+
+        # Voortgangsbalk.
+        bwid = W * 0.62; bx = (W - bwid) / 2; by = H * 0.70; bh = 12
+        track = QRectF(bx, by, bwid, bh)
+        tp = QPainterPath(); tp.addRoundedRect(track, 6, 6)
+        p.fillPath(tp, qc("panel2"))
+        if self._pct > 0:
+            fill = QRectF(bx, by, bwid * self._pct, bh)
+            fp = QPainterPath(); fp.addRoundedRect(fill, 6, 6)
+            p.fillPath(fp, qc("blue"))
+        p.setFont(sys_font(10, bold=True)); p.setPen(qc("gray2"))
+        p.drawText(0, int(by) + bh + 6, W, 20, int(Qt.AlignmentFlag.AlignCenter),
+                   f"{int(self._pct * 100)}%")
+        p.end()
+
+
 # ── Enkele horizontale balk (compacte modus, klein scherm) ────────────────────
 class SingleBar(QWidget):
     """Simpele weergave voor een klein scherm: één grote horizontale balk voor
@@ -879,6 +938,8 @@ class SingleBar(QWidget):
         self._trend = 0
         self._soft = SOFT_THRESHOLD_DB
         self._hard = HARD_THRESHOLD_DB
+        self._hb_ok = True     # hartslag: verwerkt de detector nog frames?
+        self._hb_phase = 0     # knippert 0/1 bij elke nieuwe frame
         self.setMinimumHeight(90)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
@@ -890,6 +951,9 @@ class SingleBar(QWidget):
             self._freq, self._level, self._trend = None, 0.0, 0
         self.update()
 
+    def set_heartbeat(self, ok, phase):
+        self._hb_ok, self._hb_phase = ok, phase
+
     N_SEG = 20   # aantal segmenten in de balk
 
     def paintEvent(self, _):
@@ -897,6 +961,16 @@ class SingleBar(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         W, H = self.width(), self.height()
         p.fillRect(0, 0, W, H, qc("panel"))
+
+        # Hartslag-lampje rechtsboven: pulseert groen zolang er frames verwerkt
+        # worden (= actief aan het scannen); wordt statisch rood als het stokt.
+        if self._hb_ok:
+            dot = qc("green") if self._hb_phase else QColor("#0e5a2f")   # aan/gedimd
+        else:
+            dot = qc("red")
+        p.setBrush(dot); p.setPen(Qt.PenStyle.NoPen)
+        p.drawEllipse(W - 22, 8, 12, 12)
+        p.setBrush(Qt.BrushStyle.NoBrush)
 
         margin = 16
         bar_h = max(30, int(H * 0.42))
@@ -1353,6 +1427,20 @@ class MainWindow(QMainWindow):
         self.stat.setStyleSheet(f"color:{C['gray2']};")
         outer.addWidget(self.stat)
 
+        # Opstart-splash: overlay over de hele central widget, bovenop alles.
+        self.splash = Splash(self.centralWidget())
+        self.splash.setGeometry(self.centralWidget().rect())
+        self.splash.raise_(); self.splash.show()
+        # Hartslag-teller-state.
+        self._hb_frames = -1
+        self._hb_stall = 0
+        self._hb_phase = 0
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if getattr(self, "splash", None) is not None:
+            self.splash.setGeometry(self.centralWidget().rect())
+
     def _cycle_band(self):
         self._on_band((self._band_idx + 1) % len(self._bands))
 
@@ -1515,6 +1603,26 @@ class MainWindow(QMainWindow):
                                      snap["alarm_db"], snap["status"], snap["overload"],
                                      snap["connected"])
             self.bars.update_data(snap["active"], self.det.soft_thr, self.det.hard_thr)
+
+            # Hartslag: knippert zolang de detector nieuwe frames verwerkt.
+            cur = self.det.n_frames
+            if cur != self._hb_frames:
+                self._hb_frames = cur; self._hb_stall = 0; self._hb_phase ^= 1
+            else:
+                self._hb_stall += 1
+            hb_ok = self._hb_stall < 8            # ~2 s zonder nieuwe frames = vast
+            self.bars.set_heartbeat(hb_ok, self._hb_phase)
+
+            # Opstart-splash: tonen tot de dongle verbonden is én de ruisvloer is
+            # ingeregeld; daarna verbergen.
+            if not snap["connected"]:
+                self.splash.set_state(0.0, "Wachten op SDR-dongle…"); self.splash.show()
+            elif cur <= WARMUP_FRAMES:
+                self.splash.set_state(cur / WARMUP_FRAMES, "Ruisvloer inregelen…")
+                self.splash.show()
+            elif self.splash.isVisible():
+                self.splash.hide()
+
             extra = ""
             if snap["haze_db"] > 0:
                 extra = f"  ·  ⚠ OVERSTUUR (+{snap['haze_db']:.0f} dB)"
