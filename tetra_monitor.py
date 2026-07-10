@@ -183,6 +183,9 @@ def parse_args():
                         "voor een klein scherm; de detectie zelf is ongewijzigd")
     p.add_argument("--fullscreen", action="store_true",
                    help="Venster fullscreen openen (handig op een klein scherm)")
+    p.add_argument("--buzzer", type=int, default=None, metavar="GPIO",
+                   help="BCM-nummer van een actieve buzzer (bv. 26 = pin 37); "
+                        "piept mee met rood alarm — de Pi 5 heeft geen audio-uit")
     return p.parse_args()
 
 
@@ -218,6 +221,22 @@ def play_alarm():
             os.system(f"aplay '{SIREN_WAV}' 2>/dev/null || paplay '{SIREN_WAV}' 2>/dev/null")
     except Exception:
         pass
+
+
+# ── Buzzer (GPIO) ────────────────────────────────────────────────────────────
+class GpioBuzzer:
+    """Actieve buzzer (KY-012) als alarmgeluid op de Pi 5 — die heeft geen
+    audio-uitgang, en het scherm bezet GPIO-pin 1-26, dus de buzzer hangt aan
+    een vrije pin uit de rij 27-40. Aansturing via gpiozero (lgpio, Pi 5-proof);
+    op Mac/Windows faalt de import netjes en blijft de buzzer gewoon uit."""
+    def __init__(self, bcm):
+        from gpiozero import Buzzer
+        self._bz = Buzzer(bcm)
+    def sirene(self):
+        # 4 korte pulsen ≈ het ritme van de wav-sirene; draait op de achtergrond
+        self._bz.beep(on_time=0.22, off_time=0.13, n=4, background=True)
+
+buzzer = None   # gezet in main() bij --buzzer
 
 
 # ── Kleurenpalet ────────────────────────────────────────────────────────────
@@ -825,6 +844,8 @@ class Detector(threading.Thread):
         if lvl == 2 and not self.muted and now - self._last_siren >= SIREN_COOLDOWN_S:
             self._last_siren = now
             threading.Thread(target=play_alarm, daemon=True).start()
+            if buzzer:
+                buzzer.sirene()
 
         self.alarm_level, self.alarm_freq, self.alarm_db = lvl, afreq, adb
         self._prev_level = lvl
@@ -1794,6 +1815,13 @@ class MainWindow(QMainWindow):
 # ── Opstarten ───────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
+    if args.buzzer is not None:
+        global buzzer
+        try:
+            buzzer = GpioBuzzer(args.buzzer)
+            print(f"[buzzer] actief op GPIO{args.buzzer}")
+        except Exception as e:
+            print(f"[buzzer] niet beschikbaar ({e}) — geluid via wav blijft aan")
     app = QApplication(sys.argv)
 
     source = RtlTcpSource(args)
