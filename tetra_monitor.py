@@ -34,8 +34,9 @@ import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QRectF, QSettings, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QTransform
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QHBoxLayout, QLabel, QMainWindow,
-    QMessageBox, QPushButton, QSizePolicy, QSlider, QVBoxLayout, QWidget,
+    QApplication, QComboBox, QFrame, QGraphicsScene, QGraphicsView,
+    QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
+    QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 import pyqtgraph as pg
 
@@ -186,6 +187,10 @@ def parse_args():
     p.add_argument("--buzzer", type=int, default=None, metavar="GPIO",
                    help="BCM-nummer van een actieve buzzer (bv. 26 = pin 37); "
                         "piept mee met rood alarm — de Pi 5 heeft geen audio-uit")
+    p.add_argument("--rotate", type=int, default=0, choices=(0, 90, 180, 270),
+                   help="GUI in software draaien (graden). Voor schermpjes "
+                        "waarvan het paneel alleen portret kan (bv. LUCKFOX "
+                        "3.5\") maar die liggend gemonteerd zijn: --rotate 90")
     return p.parse_args()
 
 
@@ -247,7 +252,8 @@ class GpioBuzzer:
         self._lock = threading.Lock()
         self._active = False
         self._gap = BUZZER_MAX_GAP_S
-        self._test_beeps = 0
+        self._test_until = 0.0
+        self._test_dur = 1.0
         self._stop = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -262,26 +268,27 @@ class GpioBuzzer:
                 frac = 0.0 if frac < 0.0 else 1.0 if frac > 1.0 else frac
                 self._gap = BUZZER_MAX_GAP_S - frac * (BUZZER_MAX_GAP_S - BUZZER_MIN_GAP_S)
 
-    def test(self, n=3):
-        """Handmatige test: n korte piepjes, los van de detectie — om de
-        bedrading te checken. De achtergrondthread voert ze uit, dus geen race."""
+    def test(self, duration=4.0):
+        """Handmatige test: geigerteller-demo van `duration` seconden — begint
+        traag en piept steeds sneller, alsof een contact steeds dichterbij
+        komt. Zo hoor je precies hoe een echte nadering klinkt én check je de
+        bedrading. De achtergrondthread voert 'm uit, dus geen race."""
         with self._lock:
-            self._test_beeps = n
+            self._test_until = time.monotonic() + duration
+            self._test_dur = duration
 
     def _run(self):
         while not self._stop:
             with self._lock:
-                if self._test_beeps > 0:
-                    self._test_beeps -= 1
-                    do_test = True
-                else:
-                    do_test = False
+                now = time.monotonic()
+                test_left = self._test_until - now
+                test_dur = self._test_dur
                 active, gap = self._active, self._gap
-            if do_test:
-                self._bz.on(); time.sleep(0.1)
-                self._bz.off(); time.sleep(0.1)
-                continue
-            if not active:
+            if test_left > 0:
+                # Demo: pauze loopt lineair terug van traag naar het snelste tempo
+                frac = 1.0 - (test_left / test_dur)
+                gap = BUZZER_MAX_GAP_S - frac * (BUZZER_MAX_GAP_S - BUZZER_MIN_GAP_S)
+            elif not active:
                 self._bz.off()
                 time.sleep(0.05)
                 continue
@@ -1885,6 +1892,40 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
+# ── Gedraaide weergave (software-rotatie) ────────────────────────────────────
+class RotatedView(QGraphicsView):
+    """Tekent de complete GUI gedraaid (bv. 90° liggend op een schermpaneel dat
+    alleen portret-adressering aankan, zoals de LUCKFOX 3.5" ST7796S-kloon).
+    Touch en muis draaien automatisch mee via de QGraphicsView-transformatie."""
+
+    def __init__(self, inner, angle):
+        super().__init__()
+        self._inner = inner
+        scr = QApplication.primaryScreen().size()
+        if angle % 180:   # 90/270: logische GUI-maat = schermmaat omgewisseld
+            inner.setFixedSize(scr.height(), scr.width())
+        else:
+            inner.setFixedSize(scr.width(), scr.height())
+        self.setScene(QGraphicsScene(self))
+        self._proxy = self.scene().addWidget(inner)
+        self.setSceneRect(0, 0, inner.width(), inner.height())
+        self.rotate(angle)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(f"background:{C['bg']}; border:0;")
+        self._proxy.setFocus()
+
+    def keyPressEvent(self, e):
+        # Sneltoetsen (m/t/q/…) rechtstreeks naar de echte GUI; bewust geen
+        # super() zodat de toets niet dubbel wordt afgeleverd.
+        self._inner.keyPressEvent(e)
+
+    def closeEvent(self, e):
+        self._inner.close()   # settings opslaan + detector netjes stoppen
+        super().closeEvent(e)
+
+
 # ── Opstarten ───────────────────────────────────────────────────────────────
 def main():
     args = parse_args()
@@ -1911,7 +1952,8 @@ def main():
     detector.start()
 
     win = MainWindow(detector, compact=args.compact)
-    win.showFullScreen() if args.fullscreen else win.show()
+    top = RotatedView(win, args.rotate) if args.rotate else win
+    top.showFullScreen() if args.fullscreen else top.show()
     sys.exit(app.exec())
 
 

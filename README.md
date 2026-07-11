@@ -221,11 +221,17 @@ het scherm, de touch én de buzzer:
 sudo reboot
 ```
 
-Het script zet SPI + I2C aan, downloadt de LUCKFOX-driver (`st7796s.ko`) en het
-overlay (`Luckfox35CTP.dtbo`), schrijft de juiste regels in `config.txt` (met
-back-up), installeert `gpiozero`/`lgpio` en maakt een systemd-service die de
-**compacte GUI** fullscreen op het scherm draait met de buzzer aan. Na de reboot
-staat alles vanzelf op.
+Het script zet SPI + I2C aan, installeert de init-firmware voor de **mainline
+`panel-mipi-dbi`-driver** (kernel-onafhankelijk — overleeft kernelupdates, in
+tegenstelling tot de kant-en-klare `st7796s.ko` van de fabrikant), zet de
+standaard `goodix`-overlay aan voor de GT911-touch, schrijft de juiste regels in
+`config.txt` (met back-up), installeert `gpiozero`/`lgpio` en maakt een
+systemd-service die de **compacte GUI** fullscreen op het scherm draait met de
+buzzer aan. Na de reboot staat alles vanzelf op.
+
+> Het paneel kan alleen **portret**-adressering aan (kloon-ST7796S); liggend
+> beeld doet de GUI daarom zelf met `--rotate 90` — touch draait automatisch
+> mee. Verkeerd om? Zet `--rotate 270` in de service.
 
 **Aansluiten — welke pinnen?** Het scherm heeft een **26-pins** header en bezet
 dus alleen fysieke pin **1–26**; pinnen **27–40 blijven vrij**. Daar hangt de
@@ -244,10 +250,14 @@ De buzzer werkt als een **naderingssensor**: zodra er contact is piept hij, en h
 sterker (dus dichterbij) het signaal, hoe sneller het piepen — bij een sterk/rood
 signaal bijna aan één stuk. Mute je het alarm in de GUI, dan zwijgt de buzzer ook.
 
+De buzzer testen? Druk op de **🔔 Test**-knop in de GUI (of toets `t`): een
+geigerteller-demo van een paar seconden die steeds sneller piept — precies zoals
+een echte nadering klinkt.
+
 > **Touch** hoeft niet gekalibreerd te worden (capacitief). Reageert het niet?
-> Check `i2cdetect -y 1` — de GT911 zit op adres `0x5d` of `0x14`. **Geen beeld?**
-> Controleer welke framebuffer het scherm is (`cat /sys/class/graphics/fb*/name`)
-> en zet zonodig `FB=/dev/fbN` (zie de tips onderaan `setup_screen.sh`).
+> Check `i2cdetect -y 1` — de GT911 zit op adres `0x5d` of `0x14` — en
+> `grep -i goodix /proc/bus/input/devices`. **Geen beeld?** Check
+> `dmesg | grep -i mipi` (verwacht: `fb0: panel-mipi-dbid frame buffer device`).
 > Meer achtergrond: [LUCKFOX-wiki](https://wiki.luckfox.com/Display/3.5inch-RPi-LCD-CTP/).
 
 ### Opties
@@ -263,6 +273,7 @@ signaal bijna aan één stuk. Mute je het alarm in de GUI, dan zwijgt de buzzer 
 | `--compact` | alleen de 3 balken tonen (voor een klein scherm) |
 | `--fullscreen` | venster fullscreen openen |
 | `--buzzer GPIO` | actieve buzzer op een BCM-pin; piept sneller naarmate het signaal sterker/dichterbij is |
+| `--rotate 90` | GUI in software draaien (0/90/180/270) — voor panelen die alleen portret kunnen |
 
 De band is breder dan wat de dongle in één keer ziet (~3.2 MHz). Met de
 **banddropdown** rechtsonder schuif je tussen het lage, midden- en hoge deel van
