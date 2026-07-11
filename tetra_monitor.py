@@ -235,7 +235,8 @@ def play_alarm():
 BUZZER_PULSE_S   = 0.06    # duur van één piep
 BUZZER_MAX_GAP_S = 0.65    # pauze bij net over de zachte drempel (traag)
 BUZZER_MIN_GAP_S = 0.08    # pauze bij een sterk signaal (snel)
-BUZZER_DB_SPAN   = 25.0    # dB boven de zachte drempel voor het snelste tempo
+BUZZER_TOP_DB    = 50.0    # bij dit absolute niveau is het tempo maximaal —
+                           # gelijk voor alle modussen (Stad én Snelweg)
 
 class GpioBuzzer:
     """Actieve buzzer (KY-012) als alarmgeluid op de Pi 5 — die heeft geen
@@ -264,7 +265,9 @@ class GpioBuzzer:
         with self._lock:
             self._active = level > 0
             if self._active:
-                frac = (db - soft_thr) / BUZZER_DB_SPAN
+                # Tempo loopt op van de zachte drempel tot BUZZER_TOP_DB (vast
+                # absoluut niveau, gelijk voor alle modussen).
+                frac = (db - soft_thr) / max(BUZZER_TOP_DB - soft_thr, 1.0)
                 frac = 0.0 if frac < 0.0 else 1.0 if frac > 1.0 else frac
                 self._gap = BUZZER_MAX_GAP_S - frac * (BUZZER_MAX_GAP_S - BUZZER_MIN_GAP_S)
 
