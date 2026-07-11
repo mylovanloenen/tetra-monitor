@@ -209,6 +209,47 @@ en klaar. De hotspot komt bij elke boot vanzelf op.
 > gewone wifi te verbinden (bijv. thuis om te updaten). Stel de hotspot in via het
 > Pi-scherm of een netwerkkabel — een SSH-sessie over wifi valt anders weg.
 
+### Op een eigen schermpje (LUCKFOX 3.5" capacitief) + buzzer
+
+Liever een vast schermpje in de auto i.p.v. je telefoon? Deze setup gebruikt het
+**LUCKFOX 3.5" RPi LCD (CTP)** — een IPS-scherm van 320×480 met **ST7796S**-display
+(SPI) en **GT911** 5-punts capacitieve touch (I2C). Eén script regelt de driver,
+het scherm, de touch én de buzzer:
+
+```bash
+./setup_screen.sh            # buzzer op BCM26 (fysieke pin 37)
+sudo reboot
+```
+
+Het script zet SPI + I2C aan, downloadt de LUCKFOX-driver (`st7796s.ko`) en het
+overlay (`Luckfox35CTP.dtbo`), schrijft de juiste regels in `config.txt` (met
+back-up), installeert `gpiozero`/`lgpio` en maakt een systemd-service die de
+**compacte GUI** fullscreen op het scherm draait met de buzzer aan. Na de reboot
+staat alles vanzelf op.
+
+**Aansluiten — welke pinnen?** Het scherm heeft een **26-pins** header en bezet
+dus alleen fysieke pin **1–26**; pinnen **27–40 blijven vrij**. Daar hangt de
+buzzer:
+
+| KY-012-buzzer | Aansluiten op | Waarom |
+|---|---|---|
+| **S** (signaal) | fysieke **pin 37** (= BCM26) | vrije GPIO buiten het scherm |
+| **−** (GND) | fysieke **pin 39** | GND, direct naast pin 37 |
+
+> Een andere pin gebruiken? Kies er één uit de vrije rij 27–40 (bv. BCM19 = pin 35,
+> BCM13 = pin 33, BCM6 = pin 31) en geef 'm mee: `./setup_screen.sh 19`. Blijf van
+> BCM0/BCM1 (pin 27/28) af — die zijn voor HAT-herkenning.
+
+De buzzer werkt als een **naderingssensor**: zodra er contact is piept hij, en hoe
+sterker (dus dichterbij) het signaal, hoe sneller het piepen — bij een sterk/rood
+signaal bijna aan één stuk. Mute je het alarm in de GUI, dan zwijgt de buzzer ook.
+
+> **Touch** hoeft niet gekalibreerd te worden (capacitief). Reageert het niet?
+> Check `i2cdetect -y 1` — de GT911 zit op adres `0x5d` of `0x14`. **Geen beeld?**
+> Controleer welke framebuffer het scherm is (`cat /sys/class/graphics/fb*/name`)
+> en zet zonodig `FB=/dev/fbN` (zie de tips onderaan `setup_screen.sh`).
+> Meer achtergrond: [LUCKFOX-wiki](https://wiki.luckfox.com/Display/3.5inch-RPi-LCD-CTP/).
+
 ### Opties
 
 | Optie | Betekenis |
@@ -219,6 +260,9 @@ en klaar. De hotspot komt bij elke boot vanzelf op.
 | `--port` | rtl_tcp poort (default 1234) |
 | `--device` | dongle index (default 0) |
 | `--extern` | rtl_tcp draait al; niet zelf starten/stoppen |
+| `--compact` | alleen de 3 balken tonen (voor een klein scherm) |
+| `--fullscreen` | venster fullscreen openen |
+| `--buzzer GPIO` | actieve buzzer op een BCM-pin; piept sneller naarmate het signaal sterker/dichterbij is |
 
 De band is breder dan wat de dongle in één keer ziet (~3.2 MHz). Met de
 **banddropdown** rechtsonder schuif je tussen het lage, midden- en hoge deel van

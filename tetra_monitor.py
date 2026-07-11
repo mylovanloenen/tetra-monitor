@@ -224,17 +224,74 @@ def play_alarm():
 
 
 # ── Buzzer (GPIO) ────────────────────────────────────────────────────────────
+# Naderingsgeluid: hoe sterker het signaal (dus hoe dichterbij), hoe korter de
+# pauze tussen piepjes — bij net over de drempel traag, bij een sterk/rood
+# signaal bijna aan één stuk (zoals een inparkeersensor).
+BUZZER_PULSE_S   = 0.06    # duur van één piep
+BUZZER_MAX_GAP_S = 0.65    # pauze bij net over de zachte drempel (traag)
+BUZZER_MIN_GAP_S = 0.08    # pauze bij een sterk signaal (snel)
+BUZZER_DB_SPAN   = 25.0    # dB boven de zachte drempel voor het snelste tempo
+
 class GpioBuzzer:
     """Actieve buzzer (KY-012) als alarmgeluid op de Pi 5 — die heeft geen
     audio-uitgang, en het scherm bezet GPIO-pin 1-26, dus de buzzer hangt aan
     een vrije pin uit de rij 27-40. Aansturing via gpiozero (lgpio, Pi 5-proof);
-    op Mac/Windows faalt de import netjes en blijft de buzzer gewoon uit."""
+    op Mac/Windows faalt de import netjes en blijft de buzzer gewoon uit.
+
+    Draait een eigen achtergrondthread die continu piept zolang er contact is;
+    update() ververst alleen het tempo, zodat het piepen nooit stokt tussen
+    twee metingen in."""
     def __init__(self, bcm):
         from gpiozero import Buzzer
         self._bz = Buzzer(bcm)
-    def sirene(self):
-        # 4 korte pulsen ≈ het ritme van de wav-sirene; draait op de achtergrond
-        self._bz.beep(on_time=0.22, off_time=0.13, n=4, background=True)
+        self._lock = threading.Lock()
+        self._active = False
+        self._gap = BUZZER_MAX_GAP_S
+        self._test_beeps = 0
+        self._stop = False
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def update(self, level, db, soft_thr):
+        """Elke meetronde aanroepen. level: 0 = stil, 1/2 = oranje/rood-alarm;
+        db = huidige signaalsterkte; soft_thr = drempel waarvanaf geluid start."""
+        with self._lock:
+            self._active = level > 0
+            if self._active:
+                frac = (db - soft_thr) / BUZZER_DB_SPAN
+                frac = 0.0 if frac < 0.0 else 1.0 if frac > 1.0 else frac
+                self._gap = BUZZER_MAX_GAP_S - frac * (BUZZER_MAX_GAP_S - BUZZER_MIN_GAP_S)
+
+    def test(self, n=3):
+        """Handmatige test: n korte piepjes, los van de detectie — om de
+        bedrading te checken. De achtergrondthread voert ze uit, dus geen race."""
+        with self._lock:
+            self._test_beeps = n
+
+    def _run(self):
+        while not self._stop:
+            with self._lock:
+                if self._test_beeps > 0:
+                    self._test_beeps -= 1
+                    do_test = True
+                else:
+                    do_test = False
+                active, gap = self._active, self._gap
+            if do_test:
+                self._bz.on(); time.sleep(0.1)
+                self._bz.off(); time.sleep(0.1)
+                continue
+            if not active:
+                self._bz.off()
+                time.sleep(0.05)
+                continue
+            self._bz.on()
+            time.sleep(BUZZER_PULSE_S)
+            self._bz.off()
+            time.sleep(max(0.0, gap - BUZZER_PULSE_S))
+
+    def close(self):
+        self._stop = True
 
 buzzer = None   # gezet in main() bij --buzzer
 
@@ -844,8 +901,11 @@ class Detector(threading.Thread):
         if lvl == 2 and not self.muted and now - self._last_siren >= SIREN_COOLDOWN_S:
             self._last_siren = now
             threading.Thread(target=play_alarm, daemon=True).start()
-            if buzzer:
-                buzzer.sirene()
+
+        # Buzzer: elke ronde bijwerken (geen edge/cooldown) zodat het tempo
+        # continu meeschaalt met de signaalsterkte — sneller piepen = dichterbij.
+        if buzzer:
+            buzzer.update(0 if self.muted else lvl, adb, self.soft_thr)
 
         self.alarm_level, self.alarm_freq, self.alarm_db = lvl, afreq, adb
         self._prev_level = lvl
@@ -1467,7 +1527,9 @@ class MainWindow(QMainWindow):
         self.btn_reset.clicked.connect(self.det.reset_noise_floor)
         self.btn_bl = QPushButton("Wis negeerlijst")
         self.btn_bl.clicked.connect(self.det.clear_blacklist)
-        for b in (self.btn_mute, self.btn_reset, self.btn_bl):
+        self.btn_test = QPushButton("🔔 Test buzzer")
+        self.btn_test.clicked.connect(self._test_buzzer)
+        for b in (self.btn_mute, self.btn_reset, self.btn_bl, self.btn_test):
             b.setStyleSheet(
                 f"QPushButton {{ background:{C['panel']}; color:{C['gray1']}; "
                 f"border:1px solid {C['sep']}; border-radius:8px; padding:7px; }}"
@@ -1517,7 +1579,8 @@ class MainWindow(QMainWindow):
         self.btn_mode = QPushButton();      self.btn_mode.clicked.connect(self._cycle_mode)
         self.btn_gainmode = QPushButton("Gain"); self.btn_gainmode.clicked.connect(self._cycle_gain_mode)
         self.btn_mute = QPushButton();      self.btn_mute.clicked.connect(self._toggle_mute)
-        for b in (self.btn_mode, self.btn_gainmode, self.btn_mute):
+        self.btn_test = QPushButton("🔔 Test"); self.btn_test.clicked.connect(self._test_buzzer)
+        for b in (self.btn_mode, self.btn_gainmode, self.btn_mute, self.btn_test):
             b.setMinimumHeight(50)
             b.setFont(sys_font(10, bold=True))
             b.setStyleSheet(
@@ -1558,10 +1621,19 @@ class MainWindow(QMainWindow):
         if not self.det.auto_blacklist:
             self.det.clear_blacklist()
 
+    def _test_buzzer(self):
+        """Testknop: laat de buzzer een paar keer piepen (bedrading checken).
+        Op een pc zonder buzzer klinkt de wav-sirene als terugkoppeling."""
+        if buzzer:
+            buzzer.test()
+        else:
+            threading.Thread(target=play_alarm, daemon=True).start()
+
     def keyPressEvent(self, e):
         """Sneltoetsen — handig op een scherm zonder (werkende) touch:
         m = rijmodus, b = band, g = gain-modus, s = geluid aan/uit,
-        k = auto-negeerlijst aan/uit, r = reset ruisvloer, q/Esc = afsluiten."""
+        k = auto-negeerlijst aan/uit, r = reset ruisvloer, t = buzzer testen,
+        q/Esc = afsluiten."""
         t = e.text().lower()
         if   t == "m": self._cycle_mode()
         elif t == "b": self._cycle_band()
@@ -1569,6 +1641,7 @@ class MainWindow(QMainWindow):
         elif t == "s": self._toggle_mute()
         elif t == "k": self._toggle_blacklist_btn()
         elif t == "r": self.det.reset_noise_floor()
+        elif t == "t": self._test_buzzer()
         elif t == "q" or e.key() == Qt.Key.Key_Escape: self.close()
         else: super().keyPressEvent(e)
 
