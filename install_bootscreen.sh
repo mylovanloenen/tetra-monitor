@@ -8,7 +8,8 @@
 #    • geen terminaltekst: kernel- en systemd-meldingen gaan naar tty3 i.p.v.
 #      het scherm (console=tty3, quiet), knipperende cursor uit, geen
 #      login-prompt op het scherm (getty@tty1 uit — inloggen gaat via SSH)
-#    • het logo zelf: service priosense-bootlogo zet bootlogo.raw op /dev/fb0
+#    • het logo zelf: service priosense-bootlogo (bootlogo.sh) koppelt de
+#      tekstconsole los van het schermpje en zet bootlogo.raw op /dev/fb0
 #      zodra het schermpje er is
 #
 #  Back-ups van cmdline.txt en config.txt komen naast het origineel
@@ -58,8 +59,8 @@ Before=tetramonitor-gui.service
 
 [Service]
 Type=oneshot
-# Wachten tot het schermpje (fb0) er is, dan het logo erop zetten.
-ExecStart=/bin/sh -c 'for i in \$(seq 1 150); do [ -e /dev/fb0 ] && break; sleep 0.1; done; cat "$RAW" > /dev/fb0'
+# Wacht op het schermpje, koppelt de tekstconsole ervan los en zet het logo erop.
+ExecStart=/bin/sh $REPO/bootlogo.sh
 
 [Install]
 WantedBy=sysinit.target
@@ -91,7 +92,7 @@ sudo systemctl disable getty@tty1.service
 
 echo "👀 4/4  Voorproefje: het logo staat nu 6 seconden op het scherm…"
 sudo systemctl stop tetramonitor-gui.service 2>/dev/null || true
-sudo sh -c "cat '$RAW' > /dev/fb0"
+sudo sh "$REPO/bootlogo.sh"
 sleep 6
 sudo systemctl start tetramonitor-gui.service 2>/dev/null || true
 
