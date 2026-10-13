@@ -3,7 +3,8 @@
 #  priosense — opstartscherm op de Pi
 #
 #  Na stroom-erop zie je alleen nog het priosense-logo tot de app start:
-#    • geen Raspberry Pi-logo (logo.nologo, disable_splash=1)
+#    • geen Raspberry Pi-logo (logo.nologo, disable_splash=1) en geen
+#      "Welcome to the Raspberry Pi Desktop" (Plymouth uit: 'splash' weg)
 #    • geen terminaltekst: kernel- en systemd-meldingen gaan naar tty3 i.p.v.
 #      het scherm (console=tty3, quiet), knipperende cursor uit, geen
 #      login-prompt op het scherm (getty@tty1 uit — inloggen gaat via SSH)
@@ -72,6 +73,11 @@ echo "🔇 3/4  Pi-logo's en terminaltekst uitzetten…"
 # cmdline.txt is één regel: console naar tty3 + opties toevoegen die er nog niet staan.
 LINE=$(head -n1 "$CMD")
 LINE=${LINE//console=tty1/console=tty3}
+# Plymouth uit ('splash'): op Raspberry Pi OS Desktop toont dat "Welcome to the
+# Raspberry Pi Desktop" vóór ons logo.
+NEW=""
+for T in $LINE; do [ "$T" = "splash" ] || NEW="$NEW $T"; done
+LINE="${NEW# }"
 for OPT in quiet loglevel=3 logo.nologo vt.global_cursor_default=0 consoleblank=0; do
     KEY=${OPT%%=*}
     case " $LINE " in
