@@ -31,10 +31,12 @@ from datetime import datetime
 
 import numpy as np
 
-from PyQt6.QtCore import Qt, QTimer, QRectF, QSettings, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen, QTransform
+from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, QSettings, QSize, pyqtSignal
+from PyQt6.QtGui import (
+    QColor, QFont, QFontDatabase, QFontMetrics, QPainter, QPainterPath, QPen, QTransform,
+)
 from PyQt6.QtWidgets import (
-    QApplication, QComboBox, QFrame, QGraphicsScene, QGraphicsView,
+    QAbstractButton, QApplication, QComboBox, QFrame, QGraphicsScene, QGraphicsView,
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
     QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
@@ -325,6 +327,93 @@ def sys_font(size, bold=False):
     if bold:
         f.setWeight(QFont.Weight.Bold)
     return f
+
+
+# ── Merk: logo, kleuren en lettertypen (gelijk aan priosense.nl) ─────────────
+BRAND_BLUE = "#3aa0ff"
+WORDMARK_FAMILY = "PrioSense Wordmark"   # Archivo Bold, 112% breed (fonts/)
+UI_FAMILY = "Barlow"
+# Palet van het hoofdscherm-ontwerp (compacte modus, 480×320).
+SCREEN = {
+    "bg": "#0B0E12", "ink": "#E9EDF2", "muted": "#AEB6C2",
+    "chip": "#151A21", "chip_line": "#2A313B", "seg_off": "#1C222A",
+    "green": "#2FBF71", "yellow": "#FFD23F", "red": "#FF4136",
+    "mute_bg": "#3A1414", "mute_ink": "#FFB3AE",
+}
+FONTS_DIR = os.path.join(_script_dir(), "fonts")
+
+
+def load_brand_fonts():
+    """De merklettertypen meeleveren: de Pi heeft Barlow en Archivo niet."""
+    if not os.path.isdir(FONTS_DIR):
+        return
+    for name in sorted(os.listdir(FONTS_DIR)):
+        if name.lower().endswith((".ttf", ".otf")):
+            QFontDatabase.addApplicationFont(os.path.join(FONTS_DIR, name))
+
+
+def brand_font(px, weight=QFont.Weight.Bold, family=UI_FAMILY):
+    f = QFont(family)
+    f.setPixelSize(int(px))
+    f.setWeight(weight)
+    return f
+
+
+def draw_brand_mark(p, cx, cy, scale, color):
+    """Het priosense-logo: een punt met drie zendbogen erboven, dezelfde
+    geometrie als het favicon van priosense.nl. (cx, cy) is het midden van de
+    punt; 1 eenheid van het favicon = `scale` px."""
+    p.save()
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    for r, width, alpha in ((9.6, 3.52, 1.0), (17.28, 2.75, 0.765), (24.96, 1.98, 0.53)):
+        c = QColor(color); c.setAlphaF(alpha)
+        pen = QPen(c, width * scale); pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        p.setPen(pen)
+        rr = r * scale
+        p.drawArc(QRectF(cx - rr, cy - rr, 2 * rr, 2 * rr), 35 * 16, 110 * 16)
+    p.setPen(Qt.PenStyle.NoPen); p.setBrush(QColor(color))
+    d = 3.2 * scale
+    p.drawEllipse(QRectF(cx - d, cy - d, 2 * d, 2 * d))
+    p.restore()
+
+
+def paint_brand_splash(p, W, H, pct=None, text=None):
+    """Opstartbeeld: logo + 'priosense' gecentreerd op de achtergrond van het
+    hoofdscherm. Met `pct` erbij ook een dunne voortgangsbalk + statusregel.
+    Wordt ook gebruikt voor het boot-logo (make_bootlogo.py), zodat het beeld
+    van stroom-erop tot het hoofdscherm niet verspringt."""
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.fillRect(QRectF(0, 0, W, H), QColor(SCREEN["bg"]))
+    k = min(W / 480, H / 320)
+    s = 2.9 * k                       # logo ≈ 120 px breed op 480×320
+    word_px = max(12, round(30 * k))
+    gap = 18 * k
+    above_dot = 26.0 * s              # grootste boog + halve lijndikte
+    below_dot = 3.2 * s
+    total = above_dot + below_dot + gap + word_px
+    cy = (H - total) / 2 + above_dot
+    draw_brand_mark(p, W / 2, cy, s, BRAND_BLUE)
+
+    f = QFont(WORDMARK_FAMILY); f.setPixelSize(word_px)
+    f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 98)
+    p.setFont(f); p.setPen(QColor(SCREEN["ink"]))
+    p.drawText(QRectF(0, cy + below_dot + gap, W, word_px * 1.5),
+               int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop), "priosense")
+
+    if pct is None:
+        return
+    bw, bh = W * 0.34, max(3.0, 4 * k)
+    bx, by = (W - bw) / 2, H - 58 * k
+    track = QPainterPath(); track.addRoundedRect(QRectF(bx, by, bw, bh), bh / 2, bh / 2)
+    p.fillPath(track, QColor(SCREEN["chip_line"]))
+    if pct > 0:
+        fill = QPainterPath()
+        fill.addRoundedRect(QRectF(bx, by, bw * min(1.0, pct), bh), bh / 2, bh / 2)
+        p.fillPath(fill, QColor(BRAND_BLUE))
+    if text:
+        p.setFont(brand_font(14 * k, QFont.Weight.DemiBold)); p.setPen(QColor(SCREEN["muted"]))
+        p.drawText(QRectF(0, by + bh + 10 * k, W, 22 * k),
+                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop), text)
 
 
 # ── rtl_tcp bron ────────────────────────────────────────────────────────────
@@ -1035,14 +1124,14 @@ class StatusBanner(QFrame):
 
 # ── Opstart-splash (compacte modus) ──────────────────────────────────────────
 class Splash(QWidget):
-    """Vult het hele scherm bij het opstarten: logo + titel + voortgangsbalk
-    (verbinden met de SDR → ruisvloer inregelen). Verdwijnt zodra er gescand
-    wordt."""
+    """Vult het hele scherm bij het opstarten: het priosense-logo met een dunne
+    voortgangsbalk (verbinden met de SDR → ruisvloer inregelen). Verdwijnt
+    zodra er gescand wordt, en komt terug als de dongle wegvalt."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._pct = 0.0
-        self._text = "Opstarten…"
+        self._text = "Starting…"
 
     def set_state(self, pct, text):
         self._pct = max(0.0, min(1.0, pct))
@@ -1051,149 +1140,202 @@ class Splash(QWidget):
 
     def paintEvent(self, _):
         p = QPainter(self)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        W, H = self.width(), self.height()
-        p.fillRect(0, 0, W, H, qc("bg"))
-
-        # Logo: drie oplopende balkjes met een radiogolf-boog erboven.
-        cx, cy = W / 2, H * 0.30
-        heights = [16, 26, 36]
-        bw, gap = 12, 8
-        total = len(heights) * bw + (len(heights) - 1) * gap
-        x0 = cx - total / 2
-        accent = qc("blue")                      # één kleur voor het hele opstartscherm
-        for i, hh in enumerate(heights):
-            x = x0 + i * (bw + gap)
-            rect = QRectF(x, cy - hh / 2, bw, hh)
-            path = QPainterPath(); path.addRoundedRect(rect, 3, 3)
-            p.fillPath(path, accent)
-        pen = QPen(accent); pen.setWidth(3)
-        p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
-        r = 34
-        p.drawArc(QRectF(cx - r, cy - r - 6, 2 * r, 2 * r), 30 * 16, 120 * 16)
-
-        p.setFont(sys_font(24, bold=True)); p.setPen(accent)
-        p.drawText(0, int(H * 0.44), W, 34, int(Qt.AlignmentFlag.AlignCenter), "priosense")
-        p.setFont(sys_font(11)); p.setPen(qc("gray1"))
-        p.drawText(0, int(H * 0.44) + 34, W, 22, int(Qt.AlignmentFlag.AlignCenter), self._text)
-
-        # Voortgangsbalk.
-        bwid = W * 0.62; bx = (W - bwid) / 2; by = H * 0.70; bh = 12
-        track = QRectF(bx, by, bwid, bh)
-        tp = QPainterPath(); tp.addRoundedRect(track, 6, 6)
-        p.fillPath(tp, qc("panel2"))
-        if self._pct > 0:
-            fill = QRectF(bx, by, bwid * self._pct, bh)
-            fp = QPainterPath(); fp.addRoundedRect(fill, 6, 6)
-            p.fillPath(fp, qc("blue"))
-        p.setFont(sys_font(10, bold=True)); p.setPen(qc("gray2"))
-        p.drawText(0, int(by) + bh + 6, W, 20, int(Qt.AlignmentFlag.AlignCenter),
-                   f"{int(self._pct * 100)}%")
+        paint_brand_splash(p, self.width(), self.height(), self._pct, self._text)
         p.end()
 
 
-# ── Enkele horizontale balk (compacte modus, klein scherm) ────────────────────
-class SingleBar(QWidget):
-    """Simpele weergave voor een klein scherm: één grote horizontale balk voor
-    het sterkste actieve kanaal, i.p.v. 3 aparte verticale balken."""
+# ── Hoofdscherm (compacte modus): segmentmeter, knoppen, hartslag ─────────────
+def segments_lit(level, soft, hard, n=10):
+    """dB boven ruis → aantal brandende segmenten (0–10; 3 groen, 3 geel,
+    4 rood). Het eerste gele segment gaat aan op de oranje drempel van de
+    rijmodus, het eerste rode op de rode drempel; daarboven komt er per 4 dB
+    een rood segment bij."""
+    if level <= 0:
+        return 0
+    if level < soft:
+        return max(1, min(3, math.ceil(3 * level / soft)))
+    if level < hard:
+        return 4 + min(2, int(3 * (level - soft) / max(1e-6, hard - soft)))
+    return min(n, 7 + int((level - hard) / 4))
+
+
+class SegmentMeter(QWidget):
+    """Tien staande segmenten die samen de ruimte onder de knoppen vullen.
+    Oversturing (zeer sterke zender vlakbij) = alles rood."""
+    N = 10
 
     def __init__(self):
         super().__init__()
         self._freq = None
         self._level = 0.0
-        self._trend = 0
         self._soft = SOFT_THRESHOLD_DB
         self._hard = HARD_THRESHOLD_DB
-        self._hb_ok = True     # hartslag: verwerkt de detector nog frames?
-        self._hb_phase = 0     # knippert 0/1 bij elke nieuwe frame
-        self.setMinimumHeight(90)
+        self._overload = False
+        self.setAccessibleName("Signal strength")
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-    def update_data(self, active, soft, hard):
-        """"Plakt" aan het momenteel getoonde kanaal zolang dat nog in de actieve
-        lijst staat — ook als het even niet meer de allersterkste is. Zonder dit
-        springt de balk bij meerdere gelijktijdige zenders (bv. bij een bureau)
-        voortdurend tussen kanalen, wat als aan/uit-geflikker oogt. Pas wisselen
-        zodra het huidige kanaal écht stil is geworden (uit de lijst verdwijnt)."""
-        self._soft, self._hard = soft, hard
-        by_freq = {f: (f, lvl, tr) for f, lvl, tr in active}
-        cur = by_freq.get(self._freq) if self._freq is not None else None
-        if cur is not None:
-            self._freq, self._level, self._trend = cur
+    def update_data(self, active, soft, hard, overload=False):
+        """Blijft bij het kanaal dat al getoond wordt zolang dat nog actief is,
+        ook als een ander kanaal even sterker is — anders springt de meter bij
+        meerdere zenders tegelijk (bv. bij een bureau) heen en weer."""
+        self._soft, self._hard, self._overload = soft, hard, overload
+        by_freq = {f: lvl for f, lvl, _tr in active}
+        if self._freq is not None and self._freq in by_freq:
+            self._level = by_freq[self._freq]
         elif active:
-            self._freq, self._level, self._trend = active[0]   # nieuw sterkste kanaal
+            self._freq, self._level, _ = active[0]
         else:
-            self._freq, self._level, self._trend = None, 0.0, 0
+            self._freq, self._level = None, 0.0
         self.update()
 
-    def set_heartbeat(self, ok, phase):
-        self._hb_ok, self._hb_phase = ok, phase
-
-    N_SEG = 20   # aantal segmenten in de balk
+    def lit(self):
+        if self._overload:
+            return self.N
+        return segments_lit(self._level if self._freq is not None else 0.0,
+                            self._soft, self._hard, self.N)
 
     def paintEvent(self, _):
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        W, H = self.width(), self.height()
-        p.fillRect(0, 0, W, H, qc("panel"))
+        W, H, gap = self.width(), self.height(), 6
+        seg_w = (W - (self.N - 1) * gap) / self.N
+        lit = self.lit()
+        colors = [SCREEN["green"]] * 3 + [SCREEN["yellow"]] * 3 + [SCREEN["red"]] * 4
+        for i in range(self.N):
+            path = QPainterPath()
+            path.addRoundedRect(QRectF(i * (seg_w + gap), 0, seg_w, H), 8, 8)
+            p.fillPath(path, QColor(colors[i] if i < lit else SCREEN["seg_off"]))
+        p.end()
 
-        # Hartslag-lampje rechtsboven: pulseert groen zolang er frames verwerkt
-        # worden (= actief aan het scannen); wordt statisch rood als het stokt.
-        if self._hb_ok:
-            dot = qc("green") if self._hb_phase else QColor("#0e5a2f")   # aan/gedimd
+
+def _stroke_icon(p, rect, color, draw):
+    """Lijn-icoontje op een 24×24-raster (zoals in het ontwerp), geschaald naar
+    `rect`; `draw(path)` voegt de lijnen toe."""
+    p.save()
+    p.translate(rect.x(), rect.y())
+    k = rect.width() / 24.0
+    p.scale(k, k)
+    pen = QPen(QColor(color), 2.0)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap); pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+    p.setPen(pen); p.setBrush(Qt.BrushStyle.NoBrush)
+    path = QPainterPath()
+    draw(path)
+    p.drawPath(path)
+    p.restore()
+
+
+def _poly(path, *pts):
+    path.moveTo(*pts[0])
+    for pt in pts[1:]:
+        path.lineTo(*pt)
+
+
+def icon_city(path):
+    _poly(path, (3, 21), (21, 21))
+    _poly(path, (5, 21), (5, 8), (10, 5), (10, 21))
+    _poly(path, (10, 10), (19, 10), (19, 21))
+    _poly(path, (13, 14), (16, 14))
+    _poly(path, (13, 17), (16, 17))
+
+
+def icon_highway(path):
+    _poly(path, (8, 3), (4, 21))
+    _poly(path, (16, 3), (20, 21))
+    for y in (4, 11, 18):
+        _poly(path, (12, y), (12, y + 3))
+
+
+def _icon_speaker(path):
+    _poly(path, (11, 5), (6, 9), (3, 9), (3, 15), (6, 15), (11, 19))
+    path.closeSubpath()
+
+
+def icon_sound_on(path):
+    _icon_speaker(path)
+    for cx, r in ((11.93, 5.0), (11.86, 10.0)):
+        rect = QRectF(cx - r, 12 - r, 2 * r, 2 * r)
+        path.arcMoveTo(rect, 44.4)
+        path.arcTo(rect, 44.4, -88.8)
+
+
+def icon_sound_off(path):
+    _icon_speaker(path)
+    _poly(path, (22, 9), (16, 15))
+    _poly(path, (16, 9), (22, 15))
+
+
+class PillButton(QAbstractButton):
+    """Afgeronde knop met icoon + label, zoals in het hoofdscherm-ontwerp."""
+
+    def __init__(self, text, icon, height, radius, icon_px=20):
+        super().__init__()
+        self.setText(text)
+        self._icon, self._icon_px, self._radius = icon, icon_px, radius
+        self._bg, self._line, self._ink = None, None, QColor(SCREEN["ink"])
+        self.setFixedHeight(height)
+        self.setFont(brand_font(17))
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)        # alleen touch
+        self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+
+    def set_look(self, bg=None, ink=SCREEN["ink"], line=None, icon=None, text=None):
+        self._bg = QColor(bg) if bg else None
+        self._line = QColor(line) if line else None
+        self._ink = QColor(ink)
+        if icon is not None:
+            self._icon = icon
+        if text is not None:
+            self.setText(text)
+            self.updateGeometry()
+        self.update()
+
+    def sizeHint(self):
+        w = 16 + self._icon_px + 8 + QFontMetrics(self.font()).horizontalAdvance(self.text()) + 16
+        return QSize(int(w), self.height())
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
+        if self._bg is not None or self._line is not None:
+            path = QPainterPath(); path.addRoundedRect(r, self._radius, self._radius)
+            if self._bg is not None:
+                bg = QColor(self._bg)
+                if self.isDown():
+                    bg = bg.darker(115)
+                p.fillPath(path, bg)
+            if self._line is not None:
+                p.setPen(QPen(self._line, 1)); p.drawPath(path)
+        ip = self._icon_px
+        _stroke_icon(p, QRectF(16, (self.height() - ip) / 2, ip, ip), self._ink, self._icon)
+        p.setFont(self.font()); p.setPen(self._ink)
+        p.drawText(QRectF(16 + ip + 8, 0, self.width() - (16 + ip + 8), self.height()),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter), self.text())
+        p.end()
+
+
+class HeartbeatDot(QWidget):
+    """Klein lampje: knippert groen zolang de detector nieuwe frames verwerkt
+    (= actief aan het scannen), wordt rood als dat ~2 s stokt (vastgelopen)."""
+
+    def __init__(self):
+        super().__init__()
+        self._ok, self._phase = True, 0
+        self.setFixedSize(12, 12)
+
+    def set_state(self, ok, phase):
+        if (ok, phase) != (self._ok, self._phase):
+            self._ok, self._phase = ok, phase
+            self.update()
+
+    def paintEvent(self, _):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self._ok:
+            c = QColor(SCREEN["green"]) if self._phase else QColor("#1E5A3A")
         else:
-            dot = qc("red")
-        p.setBrush(dot); p.setPen(Qt.PenStyle.NoPen)
-        p.drawEllipse(W - 22, 8, 12, 12)
-        p.setBrush(Qt.BrushStyle.NoBrush)
-
-        margin = 16
-        bar_h = max(30, int(H * 0.42))
-        bar_y = 10
-        bar_w = W - 2 * margin
-        full = max(1.0, self._hard + 6.0)
-
-        active = self._freq is not None
-        level = self._level if active else 0.0
-        n_lit = int(min(self.N_SEG, max(0, level / full * self.N_SEG)))
-
-        # Kleuren naar verhouding van het aantal segmenten (groen-geel-rood),
-        # zelfde verdeling als de rijmodus-drempels representeren.
-        n_green = round(self.N_SEG * 0.42)
-        n_yellow = round(self.N_SEG * 0.33)
-        n_red = self.N_SEG - n_green - n_yellow
-        on = [qc("green")] * n_green + [qc("yellow")] * n_yellow + [qc("red")] * n_red
-        off = ([QColor("#10261a")] * n_green + [QColor("#26220c")] * n_yellow
-               + [QColor("#2a1010")] * n_red)
-
-        gap = 4
-        seg_w = (bar_w - (self.N_SEG - 1) * gap) / self.N_SEG
-        col = qc("gray3")
-        if active:
-            col = (qc("red") if level >= self._hard
-                   else qc("yellow") if level >= self._soft else qc("green"))
-        for i in range(self.N_SEG):
-            x = margin + i * (seg_w + gap)
-            rect = QRectF(x, bar_y, seg_w, bar_h)
-            path = QPainterPath(); path.addRoundedRect(rect, 3, 3)
-            p.fillPath(path, on[i] if i < n_lit else off[i])
-
-        ty = bar_y + bar_h + 10
-        if active:
-            p.setFont(sys_font(20, bold=True)); p.setPen(col)
-            p.drawText(0, ty, W, 30, int(Qt.AlignmentFlag.AlignCenter),
-                       f"{self._freq:.3f} MHz")
-            arrow, ac = (("▲ nadert", qc("green")) if self._trend == 1 else
-                         ("▼ gaat weg", qc("orange")) if self._trend == -1 else
-                         ("► stabiel", qc("gray2")))
-            p.setFont(sys_font(14, bold=True)); p.setPen(qc("gray1"))
-            p.drawText(0, ty + 28, W, 24, int(Qt.AlignmentFlag.AlignCenter),
-                       f"+{self._level:.0f} dB")
-            p.setFont(sys_font(13, bold=True)); p.setPen(ac)
-            p.drawText(0, ty + 50, W, 22, int(Qt.AlignmentFlag.AlignCenter), arrow)
-        else:
-            p.setFont(sys_font(16, bold=True)); p.setPen(qc("gray3"))
-            p.drawText(0, ty, W, 30, int(Qt.AlignmentFlag.AlignCenter), "GEEN CONTACT")
+            c = QColor(SCREEN["red"])
+        p.setPen(Qt.PenStyle.NoPen); p.setBrush(c)
+        p.drawEllipse(QRectF(1, 1, 10, 10))
         p.end()
 
 
@@ -1409,27 +1551,29 @@ class MainWindow(QMainWindow):
         if compact:
             self._init_band_idx = 1   # compacte modus: altijd vast op 382.5 (Uplink midden)
         self._mode_idx         = s["mode_idx"]
+        if compact and self._mode_idx == CUSTOM_IDX:
+            self._mode_idx = 0        # compacte modus kent alleen City/Highway
         self._custom           = {"soft": s["custom_soft"], "hard": s["custom_hard"]}
 
         self.setWindowTitle(f"{APP_NAME} — TETRA activiteitsmonitor")
         if not self.compact:
             self.setMinimumSize(1080, 680)
-        self.setStyleSheet(f"QMainWindow, QWidget {{ background:{C['bg']}; color:{C['gray1']}; }}")
+        bg = SCREEN["bg"] if self.compact else C["bg"]
+        self.setStyleSheet(f"QMainWindow, QWidget {{ background:{bg}; color:{C['gray1']}; }}")
 
         root = QWidget(); self.setCentralWidget(root)
         outer = QVBoxLayout(root)
         if self.compact:
-            outer.setContentsMargins(5, 4, 5, 4); outer.setSpacing(5)
+            outer.setContentsMargins(16, 14, 16, 16); outer.setSpacing(12)
         else:
             outer.setContentsMargins(12, 10, 12, 10); outer.setSpacing(10)
-
-        self.banner = StatusBanner(compact=self.compact)
-        outer.addWidget(self.banner)
+            self.banner = StatusBanner()
+            outer.addWidget(self.banner)
 
         self._band_idx = self._init_band_idx
-        # Compacte modus: alleen banner + 3 balken + grote knoppen (klein scherm).
-        # Detectie/Detector/RtlTcpSource blijven volledig ongewijzigd — alleen de
-        # weergave verschilt van de volledige (Mac-)GUI hieronder.
+        # Compacte modus: het hoofdscherm-ontwerp (City/Highway + Sound, eronder
+        # tien segmenten). Detectie/Detector/RtlTcpSource blijven ongewijzigd —
+        # alleen de weergave verschilt van de volledige (Mac-)GUI hieronder.
         if self.compact:
             self._build_compact(outer)
             self._update_mute_button()
@@ -1574,36 +1718,46 @@ class MainWindow(QMainWindow):
 
     # ── Compacte weergave (klein scherm) ──
     def _build_compact(self, outer):
-        """Minimale weergave: 3 grote balken + tikknoppen, geen spectrum/
-        waterfall/geschiedenis → strak op een klein scherm (bv. 480×320)."""
+        """Het hoofdscherm-ontwerp (480×320): bovenin City/Highway en Sound,
+        daaronder tien segmenten die de rest van het scherm vullen. Geen
+        spectrum, waterfall, geschiedenis of statustekst."""
         self._bands = [("Uplink 379.9–383.1 (laag)", 381.5),
                        ("Uplink 380.9–384.1 (midden)", 382.5),
                        ("Uplink 381.9–385.1 (hoog)", 383.5),
                        ("Downlink 389.9–393.1 (laag)", 391.5),
                        ("Downlink 390.9–394.1 (midden)", 392.5),
                        ("Downlink 391.9–395.1 (hoog)", 393.5)]
-        self.bars = SingleBar()
-        outer.addWidget(self.bars, stretch=1)
 
-        row = QHBoxLayout(); row.setSpacing(4)
-        self.btn_mode = QPushButton();      self.btn_mode.clicked.connect(self._cycle_mode)
-        self.btn_gainmode = QPushButton("Gain"); self.btn_gainmode.clicked.connect(self._cycle_gain_mode)
-        self.btn_mute = QPushButton();      self.btn_mute.clicked.connect(self._toggle_mute)
-        self.btn_test = QPushButton("🔔 Test"); self.btn_test.clicked.connect(self._test_buzzer)
-        for b in (self.btn_mode, self.btn_gainmode, self.btn_mute, self.btn_test):
-            b.setMinimumHeight(50)
-            b.setFont(sys_font(10, bold=True))
-            b.setStyleSheet(
-                f"QPushButton {{ background:{C['panel']}; color:{C['gray1']}; "
-                f"border:1px solid {C['sep']}; border-radius:7px; padding:2px; }}"
-                f"QPushButton:pressed {{ background:{C['panel2']}; }}")
-            row.addWidget(b)
-        outer.addLayout(row)
+        top = QHBoxLayout(); top.setSpacing(12); top.setContentsMargins(0, 0, 0, 0)
+        seg = QFrame(); seg.setObjectName("modeSeg")
+        seg.setStyleSheet(f"QFrame#modeSeg {{ background:{SCREEN['chip']}; "
+                          f"border:1px solid {SCREEN['chip_line']}; border-radius:14px; }}")
+        seg_lay = QHBoxLayout(seg); seg_lay.setContentsMargins(4, 4, 4, 4); seg_lay.setSpacing(4)
+        self.btn_city = PillButton("City", icon_city, 48, 10)
+        self.btn_highway = PillButton("Highway", icon_highway, 48, 10)
+        self.btn_city.clicked.connect(lambda: self._set_mode(0))
+        self.btn_highway.clicked.connect(lambda: self._set_mode(1))
+        seg_lay.addWidget(self.btn_city); seg_lay.addWidget(self.btn_highway)
+        top.addWidget(seg)
+        top.addStretch(1)
+        self.hb = HeartbeatDot()
+        top.addWidget(self.hb, alignment=Qt.AlignmentFlag.AlignVCenter)
+        top.addStretch(1)
+        # Kort tikken = geluid aan/uit; 1 s vasthouden = buzzer-test (geigerteller-
+        # demo), zodat het ontwerp zonder extra testknop blijft.
+        self.btn_sound = PillButton("Sound on", icon_sound_on, 56, 14, icon_px=22)
+        self._sound_hold = QTimer(self); self._sound_hold.setSingleShot(True)
+        self._sound_hold.setInterval(1000)
+        self._sound_hold.timeout.connect(self._sound_long_press)
+        self._sound_long = False
+        self.btn_sound.pressed.connect(self._sound_pressed)
+        self.btn_sound.released.connect(self._sound_hold.stop)
+        self.btn_sound.clicked.connect(self._sound_clicked)
+        top.addWidget(self.btn_sound)
+        outer.addLayout(top)
 
-        self.stat = QLabel("Opstarten…")
-        self.stat.setFont(sys_font(8)); self.stat.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.stat.setStyleSheet(f"color:{C['gray2']};")
-        outer.addWidget(self.stat)
+        self.meter = SegmentMeter()
+        outer.addWidget(self.meter, stretch=1)
 
         # Opstart-splash: overlay over de hele central widget, bovenop alles.
         self.splash = Splash(self.centralWidget())
@@ -1697,8 +1851,6 @@ class MainWindow(QMainWindow):
             self.det.src.auto_gain = True
             if not self.compact: self.sl_gain.setEnabled(False)
         self.det.src.apply_gain()
-        if self.compact:
-            self.btn_gainmode.setText("Gain\n" + ["Hand", "Auto", "Vol"][idx])
 
     def _on_soft(self, v):
         self.det.soft_thr = v
@@ -1714,8 +1866,15 @@ class MainWindow(QMainWindow):
 
     # ── Rijmodus (Stad / Snelweg / Custom) ──
     def _cycle_mode(self):
-        self._apply_mode((self._mode_idx + 1) % len(RIJMODI))
         if self.compact:
+            self._set_mode((self._mode_idx + 1) % 2)   # alleen City/Highway
+        else:
+            self._apply_mode((self._mode_idx + 1) % len(RIJMODI))
+
+    def _set_mode(self, idx):
+        """Compacte modus: City (Stad) of Highway (Snelweg) kiezen."""
+        if idx != self._mode_idx:
+            self._apply_mode(idx)
             self._save_settings()   # direct opslaan (kiosk krijgt vaak geen nette afsluiting)
 
     def _apply_mode(self, idx):
@@ -1733,12 +1892,17 @@ class MainWindow(QMainWindow):
         self._update_mode_button()
 
     def _update_mode_button(self):
+        if self.compact:
+            for btn, idx in ((self.btn_city, 0), (self.btn_highway, 1)):
+                if idx == self._mode_idx:
+                    btn.set_look(bg=SCREEN["ink"], ink=SCREEN["bg"])
+                else:
+                    btn.set_look(bg=None, ink=SCREEN["muted"])
+            return
         m = RIJMODI[self._mode_idx]
         col = C[MODE_COLORS[m["name"]]]
-        pad = 2 if self.compact else 8
-        self.btn_mode.setText(
-            f"{m['name']}\n{self.det.soft_thr:.0f}/{self.det.hard_thr:.0f} dB" if self.compact
-            else f"Rijmodus:  {m['name']}")
+        pad = 8
+        self.btn_mode.setText(f"Rijmodus:  {m['name']}")
         self.btn_mode.setStyleSheet(
             f"QPushButton {{ background:{C['panel']}; color:{col}; "
             f"border:1px solid {col}; border-radius:7px; padding:{pad}px; font-weight:bold; }}"
@@ -1761,6 +1925,20 @@ class MainWindow(QMainWindow):
         self.spec.setXRange(self.det.freqs[0], self.det.freqs[-1])
         self.curve.setData(self.det.freqs, self.det.power)
 
+    def _sound_pressed(self):
+        self._sound_long = False
+        self._sound_hold.start()
+
+    def _sound_long_press(self):
+        self._sound_long = True
+        self._test_buzzer()
+
+    def _sound_clicked(self):
+        if self._sound_long:          # was een lange druk → alleen de test
+            self._sound_long = False
+            return
+        self._toggle_mute()
+
     def _toggle_mute(self):
         self.det.muted = not self.det.muted
         self._update_mute_button()
@@ -1768,14 +1946,22 @@ class MainWindow(QMainWindow):
             self._save_settings()   # direct opslaan (kiosk krijgt vaak geen nette afsluiting)
 
     def _update_mute_button(self):
-        pad = 2 if self.compact else 7
+        if self.compact:
+            if self.det.muted:
+                self.btn_sound.set_look(bg=SCREEN["mute_bg"], ink=SCREEN["mute_ink"],
+                                        line=SCREEN["red"], icon=icon_sound_off, text="Sound off")
+            else:
+                self.btn_sound.set_look(bg=SCREEN["chip"], ink=SCREEN["ink"],
+                                        line=SCREEN["chip_line"], icon=icon_sound_on, text="Sound on")
+            return
+        pad = 7
         if self.det.muted:
-            self.btn_mute.setText("Geluid\nuit" if self.compact else "🔇 Gedempt")
+            self.btn_mute.setText("🔇 Gedempt")
             self.btn_mute.setStyleSheet(
                 f"QPushButton {{ background:{C['panel']}; color:{C['gray2']}; "
                 f"border:1px solid {C['gray2']}; border-radius:7px; padding:{pad}px; font-weight:bold; }}")
         else:
-            self.btn_mute.setText("Geluid\naan" if self.compact else "🔊 Geluid aan")
+            self.btn_mute.setText("🔊 Geluid aan")
             self.btn_mute.setStyleSheet(
                 f"QPushButton {{ background:{C['panel']}; color:{C['gray1']}; "
                 f"border:1px solid {C['sep']}; border-radius:7px; padding:{pad}px; font-weight:bold; }}"
@@ -1784,13 +1970,10 @@ class MainWindow(QMainWindow):
     def _tick(self):
         snap = self.det.snapshot()
         if self.compact:
-            # Alleen de velden gebruiken die de 3 balken/banner nodig hebben;
-            # de detector berekent power/freqs/wfall toch al (ongewijzigd),
-            # we tekenen ze hier gewoon niet.
-            self.banner.update_state(snap["alarm_level"], snap["alarm_freq"],
-                                     snap["alarm_db"], snap["status"], snap["overload"],
-                                     snap["connected"])
-            self.bars.update_data(snap["active"], self.det.soft_thr, self.det.hard_thr)
+            # Alleen de velden die het hoofdscherm nodig heeft; de detector
+            # berekent power/freqs/wfall toch al (ongewijzigd), we tekenen ze niet.
+            self.meter.update_data(snap["active"], self.det.soft_thr, self.det.hard_thr,
+                                   overload=snap["overload"])
 
             # Hartslag: knippert zolang de detector nieuwe frames verwerkt.
             cur = self.det.n_frames
@@ -1798,29 +1981,17 @@ class MainWindow(QMainWindow):
                 self._hb_frames = cur; self._hb_stall = 0; self._hb_phase ^= 1
             else:
                 self._hb_stall += 1
-            hb_ok = self._hb_stall < 8            # ~2 s zonder nieuwe frames = vast
-            self.bars.set_heartbeat(hb_ok, self._hb_phase)
+            self.hb.set_state(self._hb_stall < 8, self._hb_phase)   # ~2 s stil = vast
 
             # Opstart-splash: tonen tot de dongle verbonden is én de ruisvloer is
             # ingeregeld; daarna verbergen.
             if not snap["connected"]:
-                self.splash.set_state(0.0, "Wachten op SDR-dongle…"); self.splash.show()
+                self.splash.set_state(0.0, "Waiting for SDR dongle…"); self.splash.show()
             elif cur <= WARMUP_FRAMES:
-                self.splash.set_state(cur / WARMUP_FRAMES, "Ruisvloer inregelen…")
+                self.splash.set_state(cur / WARMUP_FRAMES, "Calibrating…")
                 self.splash.show()
             elif self.splash.isVisible():
                 self.splash.hide()
-
-            extra = ""
-            if snap["haze_db"] > 0:
-                extra = f"  ·  ⚠ OVERSTUUR (+{snap['haze_db']:.0f} dB)"
-            elif snap["overload"]:
-                extra = "  ·  ⚠ OVERSTUUR"
-            elif snap["agc"]:
-                extra = f"  ·  gain {snap['gain']:.0f} dB (auto)"
-            if snap["blacklist"]:
-                extra += f"  ·  {snap['blacklist']} genegeerd"
-            self.stat.setText(snap["status"] + f"  ·  ruisvloer {snap['noise_floor']:.0f} dB" + extra)
             self._pending = []            # geen geschiedenis in compacte modus
             return
         self.curve.setData(snap["freqs"], snap["power"])
@@ -1916,7 +2087,8 @@ class RotatedView(QGraphicsView):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self.setStyleSheet(f"background:{C['bg']}; border:0;")
+        bg = SCREEN["bg"] if getattr(inner, "compact", False) else C["bg"]
+        self.setStyleSheet(f"background:{bg}; border:0;")
         self._proxy.setFocus()
 
     def keyPressEvent(self, e):
@@ -1940,18 +2112,26 @@ def main():
         except Exception as e:
             print(f"[buzzer] niet beschikbaar ({e}) — geluid via wav blijft aan")
     app = QApplication(sys.argv)
+    load_brand_fonts()
 
     source = RtlTcpSource(args)
+    connected = True
     try:
         source.connect()
     except Exception as e:
-        QMessageBox.critical(None, "Verbindingsfout",
-            f"Kan geen verbinding maken met rtl_tcp op {TCP_HOST}:{args.port}.\n\n"
-            f"Controleer of de RTL-SDR Blog V3 is aangesloten en of rtl_tcp "
-            f"beschikbaar is (brew install librtlsdr).\n\nFout: {e}")
-        sys.exit(1)
+        if not args.compact:
+            QMessageBox.critical(None, "Verbindingsfout",
+                f"Kan geen verbinding maken met rtl_tcp op {TCP_HOST}:{args.port}.\n\n"
+                f"Controleer of de RTL-SDR Blog V3 is aangesloten en of rtl_tcp "
+                f"beschikbaar is (brew install librtlsdr).\n\nFout: {e}")
+            sys.exit(1)
+        # Op het kastje geen foutvenster: de detector blijft herverbinden en de
+        # splash toont "Waiting for SDR dongle…" tot de dongle er is.
+        print(f"[rtl_tcp] nog geen verbinding ({e}) — wacht op de dongle")
+        connected = False
 
     detector = Detector(source)
+    detector.connected = connected
     detector.start()
 
     win = MainWindow(detector, compact=args.compact)

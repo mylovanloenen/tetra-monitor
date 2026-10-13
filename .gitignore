@@ -7,3 +7,4 @@ _alarm.wav
 build/
 dist/
 *.spec
+bootlogo.raw
