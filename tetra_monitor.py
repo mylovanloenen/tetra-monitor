@@ -33,7 +33,8 @@ import numpy as np
 
 from PyQt6.QtCore import Qt, QTimer, QPointF, QRectF, QSettings, QSize, pyqtSignal
 from PyQt6.QtGui import (
-    QColor, QFont, QFontDatabase, QFontMetrics, QPainter, QPainterPath, QPen, QTransform,
+    QColor, QFont, QFontDatabase, QFontMetrics, QFontMetricsF, QPainter, QPainterPath, QPen,
+    QTransform,
 )
 from PyQt6.QtWidgets import (
     QAbstractButton, QApplication, QComboBox, QFrame, QGraphicsScene, QGraphicsView,
@@ -333,6 +334,7 @@ def sys_font(size, bold=False):
 BRAND_BLUE = "#3aa0ff"
 WORDMARK_FAMILY = "PrioSense Wordmark"   # Archivo Bold, 112% breed (fonts/)
 UI_FAMILY = "Barlow"
+ACCENT_FAMILY = "Instrument Serif"         # cursief accent, zoals op de website
 # Palet van het hoofdscherm-ontwerp (compacte modus, 480×320).
 SCREEN = {
     "bg": "#0B0E12", "ink": "#E9EDF2", "muted": "#AEB6C2",
@@ -377,43 +379,61 @@ def draw_brand_mark(p, cx, cy, scale, color):
     p.restore()
 
 
+def _wordmark_font(px):
+    f = QFont(WORDMARK_FAMILY); f.setPixelSize(int(px))
+    f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 98)
+    return f
+
+
+def _accent_font(px):
+    """Cursieve accentletter van de website (Instrument Serif Italic)."""
+    f = QFont(ACCENT_FAMILY); f.setPixelSize(int(px)); f.setItalic(True)
+    return f
+
+
+def _draw_runs(p, x, baseline, parts):
+    """Tekststukken (tekst, font, kleur) achter elkaar op één basislijn."""
+    for text, font, color in parts:
+        p.setFont(font); p.setPen(QColor(color))
+        p.drawText(QPointF(x, baseline), text)
+        x += QFontMetricsF(font).horizontalAdvance(text)
+
+
 def paint_brand_splash(p, W, H, pct=None, text=None):
-    """Opstartbeeld: logo + 'priosense' gecentreerd op de achtergrond van het
-    hoofdscherm. Met `pct` erbij ook een dunne voortgangsbalk + statusregel.
-    Wordt ook gebruikt voor het boot-logo (make_bootlogo.py), zodat het beeld
-    van stroom-erop tot het hoofdscherm niet verspringt."""
+    """Opstartbeeld in de stijl van priosense.nl: klein logo + woordmerk
+    linksboven, daaronder groot "Hear what / you can't hear yet." met "yet."
+    cursief in merkblauw. Met `pct` erbij ook een voortgangsbalk + statusregel
+    onderaan. Wordt ook gebruikt voor het boot-logo (make_bootlogo.py); zonder
+    balk staat alles op dezelfde plek, dus het beeld verspringt niet."""
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setRenderHint(QPainter.RenderHint.TextAntialiasing)
     p.fillRect(QRectF(0, 0, W, H), QColor(SCREEN["bg"]))
     k = min(W / 480, H / 320)
-    s = 2.9 * k                       # logo ≈ 120 px breed op 480×320
-    word_px = max(12, round(30 * k))
-    gap = 18 * k
-    above_dot = 26.0 * s              # grootste boog + halve lijndikte
-    below_dot = 3.2 * s
-    total = above_dot + below_dot + gap + word_px
-    cy = (H - total) / 2 + above_dot
-    draw_brand_mark(p, W / 2, cy, s, BRAND_BLUE)
+    m = 28 * k                                  # linkermarge, alles lijnt hierop uit
 
-    f = QFont(WORDMARK_FAMILY); f.setPixelSize(word_px)
-    f.setLetterSpacing(QFont.SpacingType.PercentageSpacing, 98)
-    p.setFont(f); p.setPen(QColor(SCREEN["ink"]))
-    p.drawText(QRectF(0, cy + below_dot + gap, W, word_px * 1.5),
-               int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop), "priosense")
+    s = 0.95 * k                                # klein logo
+    draw_brand_mark(p, m + 20.5 * s, 44 * k, s, BRAND_BLUE)
+    _draw_runs(p, m + 41 * s + 8 * k, 50 * k, [("priosense", _wordmark_font(20 * k), SCREEN["ink"])])
+
+    big = _wordmark_font(46 * k)
+    _draw_runs(p, m, 150 * k, [("Hear what", big, SCREEN["ink"])])
+    _draw_runs(p, m, 204 * k, [("you can't hear ", big, SCREEN["ink"]),
+                               ("yet.", _accent_font(56 * k), BRAND_BLUE)])
 
     if pct is None:
         return
-    bw, bh = W * 0.34, max(3.0, 4 * k)
-    bx, by = (W - bw) / 2, H - 58 * k
-    track = QPainterPath(); track.addRoundedRect(QRectF(bx, by, bw, bh), bh / 2, bh / 2)
+    bw, bh = W - 2 * m, max(3.0, 4 * k)
+    by = H - 52 * k
+    track = QPainterPath(); track.addRoundedRect(QRectF(m, by, bw, bh), bh / 2, bh / 2)
     p.fillPath(track, QColor(SCREEN["chip_line"]))
     if pct > 0:
         fill = QPainterPath()
-        fill.addRoundedRect(QRectF(bx, by, bw * min(1.0, pct), bh), bh / 2, bh / 2)
+        fill.addRoundedRect(QRectF(m, by, bw * min(1.0, pct), bh), bh / 2, bh / 2)
         p.fillPath(fill, QColor(BRAND_BLUE))
     if text:
         p.setFont(brand_font(14 * k, QFont.Weight.DemiBold)); p.setPen(QColor(SCREEN["muted"]))
-        p.drawText(QRectF(0, by + bh + 10 * k, W, 22 * k),
-                   int(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop), text)
+        p.drawText(QRectF(m, by + bh + 10 * k, bw, 22 * k),
+                   int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop), text)
 
 
 # ── rtl_tcp bron ────────────────────────────────────────────────────────────
