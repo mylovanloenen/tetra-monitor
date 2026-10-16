@@ -1,0 +1,5 @@
+.pio/
+.vscode/
+sim/obj/
+sim/priosense_sim
+sim/out/
