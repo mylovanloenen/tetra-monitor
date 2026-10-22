@@ -18,6 +18,16 @@ public:
     // Afstemmen + RX herstarten; daarna DWELL_US wachten en readRssiDbm().
     void tune(uint32_t hz);
     float readRssiDbm();
+    // LNA-stand 1 (G1, maximaal) … 6 (G6, −48 dB). Geldt vanaf de volgende tune().
+    void setLnaGain(int step);
+
+    // Snelle scan: één SPI-transactie per ronde (beginBurst … endBurst) en een
+    // vooraf berekende FRF-waarde per kanaal. Tussen begin/end alleen de *Fast-functies.
+    static uint32_t frfFor(uint32_t hz);
+    void beginBurst();
+    void endBurst();
+    void tuneFast(uint32_t frf);
+    float readRssiFast();
 
     uint8_t version() const { return version_; }
 

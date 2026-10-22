@@ -13,10 +13,10 @@
 #include "../src/ui.h"
 
 namespace {
-Display lcd(320, 480);   // staand paneel, net als de SC01 Plus; rotatie maakt 'm liggend
+Display lcd(480, 320);   // liggend venster, zoals je de SC01 Plus vasthoudt
 Detector detector;
 DetectorSnapshot snap;
-ui::State state = {0, false, true};
+ui::State state = {0, DEFAULT_VOLUME, true};
 std::mt19937 rng(7);
 std::normal_distribution<float> noise(0, 1.5f);
 std::string shotDir;
@@ -54,7 +54,7 @@ void shot(const char* name) {
 }
 
 void setup() {
-    ui::begin(lcd);
+    ui::begin(lcd, 0);       // venster is al liggend: niet nog eens draaien
     for (float p = 0; p <= 1.0f; p += 0.25f) {
         ui::splash(p, p < 1 ? "Radio A... Radio B..." : "2 radios ready");
         if (!shotDir.empty() && p == 0.5f) shot("0_splash");
@@ -73,7 +73,7 @@ void loop() {
     switch (ui::pollTouch()) {
         case ui::Touch::City:      state.mode = 0; break;
         case ui::Touch::Highway:   state.mode = 1; break;
-        case ui::Touch::SoundTap:  state.muted = !state.muted; break;
+        case ui::Touch::SoundTap:  state.volume = (state.volume + 1) % N_VOLUME; break;
         case ui::Touch::SoundHold: printf("[sim] geigerteller-test\n"); break;
         case ui::Touch::None:      break;
     }
@@ -107,7 +107,7 @@ void loop() {
             {27.0f, "7_oversturing", 0, false},
             {37.0f, "8_stil_muted", 0, false},
         };
-        if (t > 30 && !state.muted) { state.muted = true; }
+        if (t > 30 && state.volume != 0) { state.volume = 0; }
         for (auto& s : shots)
             if (!s.done && t >= s.t) { shot(s.name); s.done = true; }
         if (shots[7].done) { std::exit(0); }

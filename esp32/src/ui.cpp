@@ -63,10 +63,11 @@ void speaker(float x, float y, float k, uint16_t c) {
     const float p[][2] = {{11, 5}, {6, 9}, {3, 9}, {3, 15}, {6, 15}, {11, 19}, {11, 5}};
     for (int i = 0; i < 6; ++i) line(x, y, k, p[i][0], p[i][1], p[i + 1][0], p[i + 1][1], c);
 }
-void iconSoundOn(float x, float y, float k, uint16_t c) {
+// Speaker met 1–3 golfjes, naar het volume.
+template <int N> void iconSoundLevel(float x, float y, float k, uint16_t c) {
     speaker(x, y, k, c);
-    arc(x, y, k, 11.93f, 12, 5, -44.4f, 44.4f, c);
-    arc(x, y, k, 11.86f, 12, 10, -44.4f, 44.4f, c);
+    const float r[] = {4.0f, 7.5f, 11.0f};
+    for (int i = 0; i < N; ++i) arc(x, y, k, 11.9f, 12, r[i], -44.4f, 44.4f, c);
 }
 void iconSoundOff(float x, float y, float k, uint16_t c) {
     speaker(x, y, k, c);
@@ -99,10 +100,13 @@ void drawMode(int mode) {
     drawPill(highwayR, "Highway", iconHighway, 20, 10, mode == 1 ? INK : -1, mode == 1 ? BG : MUTED, -1, CHIP);
 }
 
-void drawSound(bool muted) {
+const char* const SOUND_LABEL[] = {"Sound off", "Sound low", "Sound mid", "Sound high"};
+const IconFn SOUND_ICON[] = {iconSoundOff, iconSoundLevel<1>, iconSoundLevel<2>, iconSoundLevel<3>};
+
+void drawSound(int volume) {
     L->fillRect(soundR.x, soundR.y, soundR.w, soundR.h, BG);
-    if (muted) drawPill(soundR, "Sound off", iconSoundOff, 22, 14, MUTE_BG, MUTE_INK, RED);
-    else       drawPill(soundR, "Sound on", iconSoundOn, 22, 14, CHIP, INK, CHIP_LINE);
+    if (volume <= 0) drawPill(soundR, SOUND_LABEL[0], iconSoundOff, 22, 14, MUTE_BG, MUTE_INK, RED);
+    else drawPill(soundR, SOUND_LABEL[volume], SOUND_ICON[volume], 22, 14, CHIP, INK, CHIP_LINE);
 }
 
 void drawDot(bool ok, bool phase) {
@@ -146,8 +150,8 @@ void brandMark(float cx, float cy, float s, uint32_t colorHex) {
 
 // UI-staat die al op het scherm staat (om alleen verschillen te tekenen).
 int shownMode = -1, shownLit = -1;
-bool shownMuted = false, shownOk = false, shownPhase = false;
-float stickyFreqIdx = -1;
+int shownVolume = -1;
+bool shownOk = false, shownPhase = false;
 
 // Touch: tik = bij loslaten, Sound vasthouden ≥ 1 s = test.
 bool wasDown = false, holdFired = false;
@@ -155,10 +159,10 @@ uint32_t downMs = 0;
 int downX = 0, downY = 0;
 }
 
-void begin(Display& lcd) {
+void begin(Display& lcd, int rotation) {
     L = &lcd;
     L->init();
-    L->setRotation(SCREEN_ROTATION);
+    L->setRotation(rotation);
     L->setBrightness(BACKLIGHT);
     L->fillScreen(BG);
 
@@ -167,7 +171,8 @@ void begin(Display& lcd) {
     chipR = {M, TOP_Y, 4 + cityW + 4 + hwW + 4, CHIP_H};
     cityR = {M + 4, TOP_Y + 4, cityW, PILL_H};
     highwayR = {M + 4 + cityW + 4, TOP_Y + 4, hwW, PILL_H};
-    int soundW = max(pillWidth("Sound off", 22), pillWidth("Sound on", 22));
+    int soundW = 0;
+    for (const char* s : SOUND_LABEL) soundW = max(soundW, pillWidth(s, 22));
     soundR = {W - M - soundW, TOP_Y, soundW, SOUND_H};
     int dotX = (chipR.x + chipR.w + soundR.x) / 2 - 6;
     dotR = {dotX, TOP_Y + CHIP_H / 2 - 6, 12, 12};
@@ -212,34 +217,33 @@ void drawMain(const State& st) {
     L->startWrite();
     L->fillScreen(BG);
     drawMode(st.mode);
-    drawSound(st.muted);
+    drawSound(st.volume);
     drawDot(st.scanning, false);
     drawSegments(0);
     L->endWrite();
-    shownMode = st.mode; shownMuted = st.muted; shownLit = 0;
+    shownMode = st.mode; shownVolume = st.volume; shownLit = 0;
     shownOk = st.scanning; shownPhase = false;
 }
 
 void update(const State& st, const DetectorSnapshot& snap, bool phase) {
     L->startWrite();
     if (st.mode != shownMode) { drawMode(st.mode); shownMode = st.mode; }
-    if (st.muted != shownMuted) { drawSound(st.muted); shownMuted = st.muted; }
+    if (st.volume != shownVolume) { drawSound(st.volume); shownVolume = st.volume; }
     if (st.scanning != shownOk || phase != shownPhase) {
         drawDot(st.scanning, phase); shownOk = st.scanning; shownPhase = phase;
     }
 
-    // Meter blijft bij het kanaal dat al getoond wordt zolang dat nog actief
-    // is, anders springt hij bij meerdere zenders heen en weer.
-    int idx = (int)stickyFreqIdx;
-    if (idx < 0 || snap.levels[idx] <= 0) {
-        idx = -1;
-        float best = 0;
-        for (int i = 0; i < N_CHANNELS; ++i)
-            if (snap.levels[i] > best) { best = snap.levels[i]; idx = i; }
-    }
-    stickyFreqIdx = idx;
+    // Balk = sterkste van álle kanalen (elk kanaal houdt z'n piek 4 s vast en zakt
+    // dan langzaam), en nooit lager dan wat het alarm/geluid zegt. Zo vertellen
+    // balk en piepjes altijd hetzelfde, ook als steeds andere kanalen zenden.
+    float level = 0;
+    for (int i = 0; i < N_CHANNELS; ++i) level = fmaxf(level, snap.levels[i]);
     const DriveMode& m = MODES[st.mode];
-    int lit = snap.overload ? N_SEG : segmentsLit(idx >= 0 ? snap.levels[idx] : 0, m.soft, m.hard);
+    int lit = segmentsLit(level, m.soft, m.hard);
+    if (snap.alarm >= 1) lit = max(lit, segmentsLit(fmaxf(snap.alarmDb, m.soft), m.soft, m.hard));
+    if (snap.alarm >= 2) lit = max(lit, 7);
+    if (snap.haze) lit = max(lit, 5);          // waas: tot in het geel
+    if (snap.overload) lit = N_SEG;            // zender pal naast je: alles rood
     if (lit != shownLit) { drawSegments(lit); shownLit = lit; }
     L->endWrite();
 }

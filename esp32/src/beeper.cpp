@@ -1,5 +1,7 @@
 #include "beeper.h"
 #include "config.h"
+#include "sounds/bark.h"
+#include "sounds/ping.h"
 #include <Arduino.h>
 #include <driver/i2s.h>
 #include <math.h>
@@ -14,13 +16,24 @@ bool active = false;
 float gapS = BEEP_MAX_GAP_S;
 uint32_t testUntilMs = 0;
 
-constexpr int TONE_N = (int)(RATE * BEEP_PULSE_S);
-int16_t tone_[TONE_N];               // één piep van BEEP_PULSE_S
-int16_t silence_[256];
+static_assert(BARK_RATE == RATE && PING_RATE == RATE, "geluiden moeten op 16 kHz staan");
+constexpr bool SAMPLED = BEEP_SOUND != SOUND_BLIP;
+constexpr int TONE_N = BEEP_SOUND == SOUND_BARK ? BARK_N
+                     : BEEP_SOUND == SOUND_PING ? PING_N : (int)(RATE * BEEP_PULSE_S);
+constexpr float TONE_S = (float)TONE_N / RATE;
+// Bij een opgenomen geluid nooit sneller dan het geluid zelf plus een kort stilte-gaatje.
+constexpr float MIN_GAP_S = SAMPLED ? TONE_S + 0.06f : BEEP_MIN_GAP_S;
+// Stereo (L,R om en om): de NS4168 op de SC01 Plus speelt maar één kanaal af,
+// afhankelijk van hoe hij op het board is ingesteld. Op beide kanalen hetzelfde
+// sturen werkt altijd.
+float   base_[TONE_N];               // één blip op vol volume (-1..1)
+int16_t tone_[2 * TONE_N];           // dezelfde blip op het ingestelde volume
+int16_t silence_[2 * 256];
 
 float gapFor(float frac) {
     frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
-    return BEEP_MAX_GAP_S - frac * (BEEP_MAX_GAP_S - BEEP_MIN_GAP_S);
+    float g = BEEP_MAX_GAP_S - frac * (BEEP_MAX_GAP_S - BEEP_MIN_GAP_S);
+    return g < MIN_GAP_S ? MIN_GAP_S : g;
 }
 
 void writeSilence(float seconds) {
@@ -28,7 +41,7 @@ void writeSilence(float seconds) {
     size_t w;
     while (n > 0) {
         int k = n > 256 ? 256 : n;
-        i2s_write(PORT, silence_, k * sizeof(int16_t), &w, portMAX_DELAY);
+        i2s_write(PORT, silence_, 2 * k * sizeof(int16_t), &w, portMAX_DELAY);
         n -= k;
     }
 }
@@ -49,7 +62,7 @@ void task(void*) {
         }
         if (!on) { writeSilence(0.05f); continue; }
         i2s_write(PORT, tone_, sizeof(tone_), &w, portMAX_DELAY);
-        writeSilence(gap - BEEP_PULSE_S > 0 ? gap - BEEP_PULSE_S : 0);
+        writeSilence(gap - TONE_S > 0 ? gap - TONE_S : 0);
     }
 }
 }
@@ -59,7 +72,7 @@ void begin() {
     cfg.mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX);
     cfg.sample_rate = RATE;
     cfg.bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT;
-    cfg.channel_format = I2S_CHANNEL_FMT_ONLY_LEFT;
+    cfg.channel_format = I2S_CHANNEL_FMT_RIGHT_LEFT;
     cfg.communication_format = I2S_COMM_FORMAT_STAND_I2S;
     cfg.dma_buf_count = 4;
     cfg.dma_buf_len = 256;
@@ -73,15 +86,20 @@ void begin() {
     pins.data_in_num = I2S_PIN_NO_CHANGE;
     i2s_set_pin(PORT, &pins);
 
-    // Piep met korte in-/uitfade (geen klik).
+    // "Blip": toon die omhoog glijdt (BEEP_F_START → BEEP_F_END) met een
+    // zachte, ronde omhullende (sin^1.5), dus geen klik aan het begin of eind.
     const int n = TONE_N;
-    const int fade = RATE / 500;   // 2 ms
-    for (int i = 0; i < n; ++i) {
-        float env = 1.0f;
-        if (i < fade) env = (float)i / fade;
-        if (n - i < fade) env = (float)(n - i) / fade;
-        tone_[i] = (int16_t)(32767 * BEEP_VOLUME * env * sinf(2 * M_PI * BEEP_TONE_HZ * i / RATE));
+    float phase = 0.0f;
+    const int16_t* smp = BEEP_SOUND == SOUND_BARK ? BARK : PING;
+    for (int i = 0; i < n && SAMPLED; ++i) base_[i] = smp[i] / 32768.0f;
+    for (int i = 0; i < n && !SAMPLED; ++i) {
+        float t = (float)i / n;
+        float f = BEEP_F_START + (BEEP_F_END - BEEP_F_START) * t;
+        phase += 2 * M_PI * f / RATE;
+        float env = powf(sinf(M_PI * t), 1.5f);
+        base_[i] = env * sinf(phase);
     }
+    setVolume(VOLUME_LEVELS[DEFAULT_VOLUME]);
     xTaskCreatePinnedToCore(task, "beeper", 4096, nullptr, 2, nullptr, 1);
 }
 
@@ -90,6 +108,15 @@ void update(int alarm, float db, float soft) {
     active = alarm > 0;
     if (active) gapS = gapFor((db - soft) / fmaxf(BEEP_TOP_DB - soft, 1.0f));
     portEXIT_CRITICAL(&mux);
+}
+
+void setVolume(float v) {
+    v = v < 0 ? 0 : v > 1 ? 1 : v;
+    for (int i = 0; i < TONE_N; ++i) {
+        int16_t s = (int16_t)(32767 * v * base_[i]);
+        tone_[2 * i] = s;
+        tone_[2 * i + 1] = s;
+    }
 }
 
 void test() {
