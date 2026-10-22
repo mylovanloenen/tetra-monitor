@@ -89,6 +89,43 @@ void buildScanLists() {
 }
 int pp(int s, int k) { return scanOrder[s][sweepReverse ? scanLen[s] - 1 - k : k]; }
 
+// Focus-scan: lijst voor deze ronde = hete kanalen + de helft van de rest
+// (om de ronde de andere helft), in dezelfde rechte volgorde als altijd.
+float hotUntil[N_CHANNELS];
+bool measured[N_CHANNELS];
+int curList[2][N_CHANNELS], curLen[2];
+int coldPhase = 0;
+int buildCurrentLists(float now) {
+    // Hooguit FOCUS_MAX hete kanalen in totaal: de meest recente (ze blijven
+    // FOCUS_HOLD_S heet, dus zonder grens stapelen ze op en wordt de ronde traag).
+    float hotFrom = now;
+    if (FOCUS_SCAN) {
+        static float h[N_CHANNELS];
+        int n = 0;
+        for (int i = 0; i < N_CHANNELS; ++i) if (now < hotUntil[i]) h[n++] = hotUntil[i];
+        if (n > FOCUS_MAX) {
+            std::nth_element(h, h + FOCUS_MAX - 1, h + n, std::greater<float>());
+            hotFrom = h[FOCUS_MAX - 1] - 1e-4f;
+        }
+    }
+    int hot = 0;
+    for (int i = 0; i < N_CHANNELS; ++i) measured[i] = false;
+    for (int s = 0; s < nRadios; ++s) {
+        curLen[s] = 0;
+        for (int k = 0; k < scanLen[s]; ++k) {
+            int ch = pp(s, k);
+            bool isHot = FOCUS_SCAN && now < hotUntil[ch] && hotUntil[ch] > hotFrom;
+            if (!FOCUS_SCAN || isHot || (ch & 1) == coldPhase) {
+                curList[s][curLen[s]++] = ch;
+                measured[ch] = true;
+                hot += isHot;
+            }
+        }
+    }
+    coldPhase ^= 1;
+    return hot;
+}
+
 void scanTask(void*) {
     static float rssi[N_CHANNELS];
     int gainStep = 1;                      // LNA-stand (1 = maximaal)
@@ -98,19 +135,22 @@ void scanTask(void*) {
     uint32_t statT0 = millis(), statSweeps = 0;
     for (;;) {
         uint32_t t0 = micros();
+        int nHot = buildCurrentLists(millis() / 1000.0f);
+        static int lastHot = 0;
+        lastHot = nHot;
         int steps = 0;
-        for (int s = 0; s < nRadios; ++s) steps = max(steps, scanLen[s]);
+        for (int s = 0; s < nRadios; ++s) steps = max(steps, curLen[s]);
         // De radio-bus is alleen van deze taak: één transactie voor de hele ronde.
         if (nRadios > 0) radios[0]->beginBurst();
         for (int k = 0; k < steps; ++k) {
             // Alle radio's tegelijk afstemmen, één keer wachten, dan uitlezen.
             for (int s = 0; s < nRadios; ++s)
-                if (k < scanLen[s]) radios[s]->tuneFast(frfOf[pp(s, k)]);
+                if (k < curLen[s]) radios[s]->tuneFast(frfOf[curList[s][k]]);
             delayMicroseconds(DWELL_US);   // stap van 25 kHz: PLL staat snel, daarna RSSI-meting
             for (int s = 0; s < nRadios; ++s)
-                if (k < scanLen[s]) {
+                if (k < curLen[s]) {
                     float v = radios[s]->readRssiFast();
-                    rssi[pp(s, k)] = v;   // ook extreem sterk telt: dat is een zender pal naast je
+                    rssi[curList[s][k]] = v;   // ook extreem sterk telt: dat is een zender pal naast je
                     if (v > VERY_STRONG_DBM) ++veryStrong;
                 }
         }
@@ -151,13 +191,39 @@ void scanTask(void*) {
         detector.setThresholds(m.soft, m.hard);
         detector.setStrongNearby(AUTO_GAIN && now - lastStrong < 1.0f);   // zender pal naast je → rood
         if (stepped) detector.gainChanged();
-        detector.process(rssi, segStart, segLen, nRadios, now);
+        detector.process(rssi, segStart, segLen, nRadios, now, measured);
+        {   // waterval: losse meting van deze ronde (niet-gemeten kanalen: vorige waarde)
+            static float wf[N_CHANNELS];
+            for (int i = 0; i < N_CHANNELS; ++i)
+                if (measured[i]) wf[i] = detector.sweepExcessDb(i);
+            ui::pushWaterfallRow(wf, spurMask);
+        }
+        // Focus: kanalen met iets erop (en hun buren) de komende seconden elke ronde.
+        if (FOCUS_SCAN) {
+            static float ex[N_CHANNELS];
+            int nCand = 0;
+            for (int i = 0; i < N_CHANNELS; ++i) {
+                ex[i] = spurMask[i] ? 0 : detector.excessDb(i);
+                if (ex[i] >= FOCUS_DB) ++nCand;
+            }
+            float cut = FOCUS_DB;
+            if (nCand > FOCUS_MAX) {                 // te veel: alleen de sterkste
+                static float tmp[N_CHANNELS];
+                for (int i = 0; i < N_CHANNELS; ++i) tmp[i] = ex[i];
+                std::nth_element(tmp, tmp + FOCUS_MAX - 1, tmp + N_CHANNELS, std::greater<float>());
+                cut = tmp[FOCUS_MAX - 1];
+            }
+            for (int i = 0; i < N_CHANNELS; ++i)
+                if (ex[i] >= cut)
+                    for (int j = i - 1; j <= i + 1; ++j)
+                        if (j >= 0 && j < N_CHANNELS && !spurMask[j]) hotUntil[j] = now + FOCUS_HOLD_S;
+        }
         detector.snapshot(snap);
         int alarm = snap.alarm;
         float db = snap.alarmDb;
         xSemaphoreGive(lock);
 
-        beeper::update(state.volume == 0 ? 0 : alarm, db, m.soft);
+        beeper::update(state.volume == 0 ? 0 : alarm, db, m.soft, m.hard);
         ++sweepCount;
         ++statSweeps;
 
@@ -171,8 +237,23 @@ void scanTask(void*) {
             float e = detector.excessDb(i);
             if (e > secPeak[i]) { secPeak[i] = e; secPeakAbs[i] = rssi[i]; }
         }
+        // Vergelijking oud/nieuw ruissysteem op precies dezelfde metingen.
+        static uint32_t cmpT0 = 0;
+        if (LOG_FLOOR_CMP && millis() - cmpT0 >= TOP_INTERVAL_MS) {
+            cmpT0 = millis();
+            static float c[N_CHANNELS], p[N_CHANNELS];
+            detector.takeCompare(c, p);
+            int bc = 0, bp = 0;
+            for (int i = 0; i < N_CHANNELS; ++i) {
+                if (spurMask[i]) continue;
+                if (c[i] > c[bc] || spurMask[bc]) bc = i;
+                if (p[i] > p[bp] || spurMask[bp]) bp = i;
+            }
+            Serial.printf("[cmp] oud %.3f:%.1f (nieuw %.1f) | nieuw %.3f:%.1f (oud %.1f)\n",
+                          channelHz(bc) / 1e6, c[bc], p[bc], channelHz(bp) / 1e6, p[bp], c[bp]);
+        }
         static uint32_t topT0 = 0;
-        if ((SENS_MAX || LOG_TOP) && millis() - topT0 >= 1000) {
+        if ((SENS_MAX || LOG_TOP) && millis() - topT0 >= TOP_INTERVAL_MS) {
             topT0 = millis();
             int best[5] = {-1, -1, -1, -1, -1};
             for (int i = 0; i < N_CHANNELS; ++i) {
@@ -185,10 +266,10 @@ void scanTask(void*) {
                     }
                 }
             }
-            Serial.printf("[top] t=%lus vloer %.1f dBm |", millis() / 1000, detector.floorDbm());
+            Serial.printf("[top] t=%.1fs vloer %.1f dBm |", millis() / 1000.0f, detector.floorDbm());
             for (int j = 0; j < 5; ++j)
                 Serial.printf(" %.3f:+%.0f(%.0f)", channelHz(best[j]) / 1e6, secPeak[best[j]],
-                              secPeakAbs[best[j]]);   // piek in deze seconde; (…) = dBm op dat moment
+                              secPeakAbs[best[j]]);   // piek in dit interval; (…) = dBm op dat moment
             Serial.printf(" | alarm %d\n", alarm);
             for (int i = 0; i < N_CHANNELS; ++i) { secPeak[i] = 0; secPeakAbs[i] = -200; }
         }
@@ -200,10 +281,10 @@ void scanTask(void*) {
             for (int i = 0; i < N_CHANNELS; ++i)
                 if (top < 0 || rssi[i] > rssi[top]) top = i;
             Serial.printf("[scan] %d radio('s), %.1f rondes/s (%.1f ms/ronde), ruisvloer %.1f dBm, "
-                          "sterkste %.4f MHz %.1f dBm, gain G%d, alarm %d, zeer sterk %lu, herhaal %lu\n",
+                          "sterkste %.4f MHz %.1f dBm, gain G%d, alarm %d, zeer sterk %lu, herhaal %lu, onrust %.2f dB, focus %d\n",
                           nRadios, statSweeps / el, sweepMs, detector.floorDbm(),
                           channelHz(top) / 1e6, rssi[top], gainStep, alarm, (unsigned long)veryStrong,
-                          (unsigned long)detector.takeRepeatCount());
+                          (unsigned long)detector.takeRepeatCount(), detector.noiseSpreadDb(), lastHot);
             veryStrong = 0;
             statT0 = millis();
             statSweeps = 0;
@@ -246,6 +327,7 @@ void setup() {
     bool okA = radioA.begin(center);
     ui::splash(0.6f, "Radio B...");
     bool okB = radioB.begin(center);
+    Serial.printf("[geheugen] PSRAM %u kB, vrij intern %u kB\n", ESP.getPsramSize() / 1024, ESP.getFreeHeap() / 1024);
     Serial.printf("[radio] A: %s (versie 0x%02X), B: %s (versie 0x%02X)\n",
                   okA ? "ok" : "NIET GEVONDEN", radioA.version(),
                   okB ? "ok" : "NIET GEVONDEN", radioB.version());
@@ -303,7 +385,15 @@ void loop() {
             }
             beeper::test();
             break;
+        case ui::Touch::View:      state.waterfall = !state.waterfall; break;
         case ui::Touch::None:      break;
+    }
+
+    // Testcommando's over USB: 'w' = waterval, 'm' = meter.
+    while (Serial.available()) {
+        int c = Serial.read();
+        if (c == 'w') state.waterfall = true;
+        if (c == 'm') state.waterfall = false;
     }
 
     // Hartslag: knippert groen zolang er rondes binnenkomen, rood als dat ~2 s stokt.

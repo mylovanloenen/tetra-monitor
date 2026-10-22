@@ -36,6 +36,96 @@ struct Rect { int x, y, w, h; bool hit(int px, int py) const {
     return px >= x && px < x + w && py >= y && py < y + h; } };
 Rect chipR, cityR, highwayR, soundR, dotR;
 
+// ── Waterval ─────────────────────────────────────────────────────────────────
+// 3 px per kanaal, ~70 rijen per seconde (één per meetronde): een TETRA-pulsje
+// (14 ms) is één streepje, een pratende portofoon een stippellijn (elke ~57 ms).
+// "Lopende streep": elke nieuwe rij komt onder de vorige, aan de onderkant weer
+// bovenaan beginnen. Het hele vlak laten schuiven stuurt 30× per seconde ~160 kB
+// naar het scherm, en die datadraden stoorden de Ra-02 (ruisvloer +3 dB, geel).
+constexpr int WF_COL = 3, WF_W = N_CHANNELS * WF_COL, WF_X = (W - WF_W) / 2;
+constexpr int WF_Y = METER_Y, WF_H = H - WF_Y - 14;      // onderaan ruimte voor MHz-labels
+constexpr int WF_Q = 24;                                   // rijen-wachtrij scan → scherm
+uint8_t wfQueue[WF_Q][N_CHANNELS];
+volatile int wfHead = 0, wfCount = 0;
+portMUX_TYPE wfMux = portMUX_INITIALIZER_UNLOCKED;
+int wfCursor = 0;                       // volgende rij op het scherm
+lgfx::swap565_t wfPal[64];              // dB 0..63 → kleur
+bool wfPalReady = false;
+constexpr uint8_t WF_MASKED = 255;
+
+void wfInit() {
+    if (wfPalReady) return;
+    // Kleuren: ruis (≤ 6 dB) donker, dan blauw → cyaan → geel → rood → wit.
+    struct Stop { float db; uint8_t r, g, b; };
+    const Stop st[] = {{0, 6, 8, 12}, {6, 8, 12, 24}, {12, 20, 60, 170}, {18, 0, 190, 230},
+                       {24, 255, 220, 40}, {32, 255, 60, 30}, {44, 255, 255, 255}, {63, 255, 255, 255}};
+    for (int d = 0; d < 64; ++d) {
+        int k = 0;
+        while (k < 6 && d > st[k + 1].db) ++k;
+        float t = (d - st[k].db) / (st[k + 1].db - st[k].db);
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        wfPal[d] = lgfx::swap565_t(st[k].r + t * (st[k + 1].r - st[k].r),
+                                   st[k].g + t * (st[k + 1].g - st[k].g),
+                                   st[k].b + t * (st[k + 1].b - st[k].b));
+    }
+    wfPalReady = true;
+}
+
+// Nieuwe rijen meteen op het scherm zetten (alleen die rijen + een witte "nu"-streep).
+void wfDrain(bool draw) {
+    static uint8_t row[N_CHANNELS];
+    static lgfx::swap565_t line[WF_W];
+    const lgfx::swap565_t masked(28, 32, 40);
+    bool any = false;
+    for (;;) {
+        portENTER_CRITICAL(&wfMux);
+        bool have = wfCount > 0;
+        if (have) {
+            int idx = (wfHead - wfCount + WF_Q) % WF_Q;
+            memcpy(row, wfQueue[idx], N_CHANNELS);
+            --wfCount;
+        }
+        portEXIT_CRITICAL(&wfMux);
+        if (!have) break;
+        if (!draw) continue;
+        lgfx::swap565_t* d = line;
+        for (int i = 0; i < N_CHANNELS; ++i) {
+            lgfx::swap565_t c = row[i] == WF_MASKED ? masked : wfPal[row[i] & 63];
+            for (int x = 0; x < WF_COL; ++x) *d++ = c;
+        }
+        L->pushImage(WF_X, WF_Y + wfCursor, WF_W, 1, line);
+        wfCursor = (wfCursor + 1) % WF_H;
+        any = true;
+    }
+    if (any) L->drawFastHLine(WF_X, WF_Y + wfCursor, WF_W, INK);   // "nu"-streep
+}
+
+int wfShownAlarm = -1;
+void wfSideBars(int alarm) {
+    uint16_t c = alarm >= 2 ? RED : alarm == 1 ? YELLOW : SEG_OFF;
+    L->fillRect(M, WF_Y, WF_X - M - 6, WF_H, c);
+    L->fillRect(WF_X + WF_W + 6, WF_Y, W - M - (WF_X + WF_W + 6), WF_H, c);
+}
+
+void wfFrame() {
+    L->fillRect(0, WF_Y, W, H - WF_Y, BG);
+    wfSideBars(0);
+    // MHz-streepjes en -labels onder de waterval
+    L->setFont(&fonts::Font0);
+    loadedFont = nullptr;
+    L->setTextColor(MUTED, BG);
+    L->setTextDatum(lgfx::top_center);
+    for (int mhz = 381; mhz <= 384; ++mhz) {
+        int ch = (int)((mhz * 1000000LL - (long long)BAND_START_HZ) / CHANNEL_HZ);
+        if (ch < 0 || ch >= N_CHANNELS) continue;
+        int x = WF_X + ch * WF_COL + WF_COL / 2;
+        L->drawFastVLine(x, WF_Y + WF_H, 3, MUTED);
+        char s[8]; snprintf(s, sizeof(s), "%d", mhz);
+        L->drawString(s, x, WF_Y + WF_H + 4);
+    }
+    wfShownAlarm = 0;
+}
+
 // ── Icoontjes op een 24×24-raster, zoals in het ontwerp ─────────────────────
 using IconFn = void (*)(float x, float y, float k, uint16_t c);
 void line(float x, float y, float k, float x0, float y0, float x1, float y1, uint16_t c) {
@@ -213,19 +303,36 @@ void splash(float pct, const char* text) {
     L->endWrite();
 }
 
+bool shownWaterfall = false;
+
+void pushWaterfallRow(const float* excessDb, const bool* masked) {
+    portENTER_CRITICAL(&wfMux);
+    uint8_t* r = wfQueue[wfHead];
+    for (int i = 0; i < N_CHANNELS; ++i) {
+        if (masked && masked[i]) { r[i] = WF_MASKED; continue; }
+        float d = excessDb[i];
+        r[i] = d <= 0 ? 0 : d >= 63 ? 63 : (uint8_t)d;
+    }
+    wfHead = (wfHead + 1) % WF_Q;
+    if (wfCount < WF_Q) ++wfCount;      // vol: oudste rij valt weg
+    portEXIT_CRITICAL(&wfMux);
+}
+
 void drawMain(const State& st) {
     L->startWrite();
     L->fillScreen(BG);
     drawMode(st.mode);
     drawSound(st.volume);
     drawDot(st.scanning, false);
-    drawSegments(0);
+    if (st.waterfall) { wfInit(); wfFrame(); wfCursor = 0; }
+    else drawSegments(0);
     L->endWrite();
     shownMode = st.mode; shownVolume = st.volume; shownLit = 0;
-    shownOk = st.scanning; shownPhase = false;
+    shownOk = st.scanning; shownPhase = false; shownWaterfall = st.waterfall;
 }
 
 void update(const State& st, const DetectorSnapshot& snap, bool phase) {
+    if (st.waterfall != shownWaterfall) { drawMain(st); }
     L->startWrite();
     if (st.mode != shownMode) { drawMode(st.mode); shownMode = st.mode; }
     if (st.volume != shownVolume) { drawSound(st.volume); shownVolume = st.volume; }
@@ -244,7 +351,15 @@ void update(const State& st, const DetectorSnapshot& snap, bool phase) {
     if (snap.alarm >= 2) lit = max(lit, 7);
     if (snap.haze) lit = max(lit, 5);          // waas: tot in het geel
     if (snap.overload) lit = N_SEG;            // zender pal naast je: alles rood
-    if (lit != shownLit) { drawSegments(lit); shownLit = lit; }
+    if (st.waterfall) {
+        // Waterval: zijbalken in de alarmkleur, en alle nieuwe rijen erin.
+        int a = snap.overload ? 2 : snap.alarm;
+        if (a != wfShownAlarm) { wfSideBars(a); wfShownAlarm = a; }
+        wfDrain(true);
+    } else {
+        wfDrain(false);   // wachtrij leeg houden, ook als de waterval niet zichtbaar is
+        if (lit != shownLit) { drawSegments(lit); shownLit = lit; }
+    }
     L->endWrite();
 }
 
@@ -264,6 +379,7 @@ Touch pollTouch() {
         if (cityR.hit(downX, downY)) result = Touch::City;
         else if (highwayR.hit(downX, downY)) result = Touch::Highway;
         else if (soundR.hit(downX, downY)) result = Touch::SoundTap;
+        else if (downY >= METER_Y - 8) result = Touch::View;   // tik onderin: meter ↔ waterval
     }
     wasDown = down;
     return result;

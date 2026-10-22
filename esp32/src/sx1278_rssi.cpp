@@ -1,4 +1,5 @@
 #include "sx1278_rssi.h"
+#include "config.h"
 
 namespace {
 // Registers (SX1276/77/78/79 datasheet, FSK/OOK-pagina)
@@ -69,7 +70,8 @@ bool Sx1278Rssi::begin(uint32_t centerHz) {
 
     setLnaGain(1);                  // handmatige gain, start op maximaal (G1)
     write(REG_RX_BW, 0x0D);         // Mant 20, Exp 5 → 12,5 kHz enkelzijdig = 25 kHz kanaal
-    write(REG_RSSI_CONFIG, 0x00);   // geen offset, 2 samples middeling (snel)
+    // geen offset; RssiSmoothing (bit 2-0): 0 = 2, 1 = 4, 2 = 8, 3 = 16 samples
+    write(REG_RSSI_CONFIG, RSSI_SAMPLES >= 16 ? 3 : RSSI_SAMPLES >= 8 ? 2 : RSSI_SAMPLES >= 4 ? 1 : 0);
     write(REG_RX_CONFIG, 0x00);     // AGC uit: zelfde gain op elk kanaal
 
     write(REG_PLL_HOP, read(REG_PLL_HOP) | 0x80);   // FastHopOn: snel van kanaal wisselen in RX

@@ -55,18 +55,53 @@ constexpr uint32_t SPUR_HALF_HZ  = 100000;   // ±100 kHz: 383,900 lekte nog mee
 // Onderrand van de band: 380,900–380,950 stonden in rust altijd op +16…+19 dB
 // (rand van het filter / minder buren voor de ruisschatting) → negeren.
 constexpr uint32_t EDGE_LOW_MASK_HZ = 380975000;   // kanalen hieronder tellen niet mee
-constexpr uint32_t DWELL_US = 75;    // per kanaal: fast hop ~20 µs + RSSI-meting ~40 µs (datablad)
+// RSSI-middeling in de chip: 2, 4, 8 of 16 samples. Elke verdubbeling ≈ 40 µs
+// extra meettijd per kanaal (bij 12,5 kHz filter), maar minder ruis per meting.
+// Focus-scan: kanalen waar net iets gezien is elke ronde meten, de rest van de
+// band om de ronde (helft A / helft B). Zo volgt hij een zender snel en blijft
+// hij toch de hele band afzoeken.
+constexpr bool  FOCUS_SCAN   = true;
+constexpr float FOCUS_DB     = 12.0f;   // kanaal (en z'n buren) wordt "heet" boven dit (dB)
+constexpr float FOCUS_HOLD_S = 3.0f;    // zo lang blijft een kanaal heet na het laatste contact
+constexpr int   FOCUS_MAX    = 24;      // hooguit zoveel hete kanalen (de sterkste)
+constexpr int RSSI_SAMPLES = 8;   // bureautest: 8 samples = 30% minder ruis-onrust (2,9 → 2,0 dB)
+constexpr uint32_t DWELL_US = RSSI_SAMPLES <= 2 ? 75 : RSSI_SAMPLES == 4 ? 115 : RSSI_SAMPLES == 8 ? 195 : 355;
+// per kanaal: fast hop ~20 µs + RSSI-meting ~40 µs (datablad)
 
 // ── Detectie (zelfde opzet als tetra_monitor.py) ────────────────────────────
 // LET OP: de dB-drempels komen van de Pi/SDR-versie. Een RSSI-chip meet
 // anders, dus deze getallen moeten bij de eerste testrit opnieuw afgesteld
 // worden (README, "Afregelen").
+// Ruisvloer-systeem:
+//  FLOOR_CFAR    = oud: per ronde de stilste 20% van ±12 buurkanalen.
+//  FLOOR_PERCHAN = nieuw: elk kanaal leert z'n eigen ruis over de tijd (mediaan)
+//                  plus hoe onrustig die ruis is; de hele band als vangnet.
+enum FloorMode { FLOOR_CFAR, FLOOR_PERCHAN };
+constexpr FloorMode FLOOR_MODE = FLOOR_CFAR;   // bureautest: PERCHAN gaf geen winst (ruispieken even hoog)
+
 struct DriveMode { const char* name; float soft; float hard; };
-constexpr DriveMode MODES[] = {
-    {"City",    30.0f, 38.0f},   // Stad: druk RF → minder gevoelig (Ra-02: ruis piekt tot ~+15)
-    {"Highway", 20.0f, 27.0f},   // Snelweg: gevoeliger
+// Drempels voor het nieuwe systeem (dB boven de eigen ruis van het kanaal,
+// geschaald naar de gemiddelde onrust van de band). Afgesteld op het bureau.
+constexpr DriveMode MODES_PERCHAN[] = {
+    {"City",    18.0f, 26.0f},
+    {"Highway", 14.0f, 21.0f},
 };
+constexpr DriveMode MODES_CFAR[] = {
+    {"City",    31.0f, 39.0f},   // Stad (op verzoek +5 t.o.v. 26/34)
+    {"Highway", 25.0f, 30.0f},   // Snelweg (op verzoek, was 17/24)
+};
+constexpr const DriveMode* MODES = FLOOR_MODE == FLOOR_PERCHAN ? MODES_PERCHAN : MODES_CFAR;
 constexpr int N_MODES = 2;
+
+// Nieuw ruissysteem (FLOOR_PERCHAN)
+constexpr float NF_STEP_DB      = 0.03f;  // mediaan-volger: zoveel dB per meting omhoog/omlaag
+constexpr float NF_STEP_FAST_DB = 0.15f;  // … de eerste NF_LEARN_S na het opstarten / een gain-stap
+constexpr float NF_LEARN_S      = 3.0f;
+constexpr float NF_DEV_A        = 0.02f;  // middeling van de onrust (gem. afwijking) per kanaal
+constexpr float NF_DEV_MIN      = 1.0f;   // onrust nooit lager dan dit (dB)
+constexpr float NF_NORM_MIN     = 0.5f;   // onrustig kanaal telt maximaal 2× zwakker…
+constexpr float NF_NORM_MAX     = 1.5f;   // …rustig kanaal maximaal 1,5× sterker
+constexpr float REPEAT_DB_PERCHAN = 10.0f; // herhaal-drempel in het nieuwe systeem
 
 constexpr int   CFAR_HALF_CHANS   = 12;     // lokale ruis uit ±12 buren…
 constexpr float CFAR_QUANTILE     = 0.20f;  // …de stilste 20% (niet de mediaan): bij veel zenders
@@ -76,7 +111,9 @@ constexpr float CFAR_QUANTILE     = 0.20f;  // …de stilste 20% (niet de mediaa
 // binnen REPEAT_WINDOW_S minstens REPEAT_HITS keer REPEAT_DB boven de ruis,
 // dan is dat een zender → oranje, ook ver onder de gewone drempel.
 constexpr bool  REPEAT_DETECT     = true;
-constexpr float REPEAT_DB         = 22.0f;   // 12 en 17 gaven nog vals alarm
+// Herhaal-drempel volgt de gewone oranje drempel van de rijstand: zoveel dB eronder.
+// City 31 → 25, Highway 25 → 19.
+constexpr float REPEAT_BELOW_SOFT_DB = 6.0f;
 constexpr int   REPEAT_HITS       = 3;
 constexpr float REPEAT_WINDOW_S   = 0.30f;
 constexpr float CHAN_SMOOTH_A     = 0.20f;  // tijdmiddeling per kanaal
@@ -113,8 +150,14 @@ constexpr int   WARMUP_SWEEPS     = 40;     // rondes om de ruisvloer op te bouw
 enum BeepSound { SOUND_BLIP, SOUND_BARK, SOUND_PING };
 constexpr BeepSound BEEP_SOUND = SOUND_PING;   // blip / hond "waf" (bark.h) / internet-ping (ping.h)
 constexpr float BEEP_PULSE_S   = 0.08f;  // duur van één "blip"
-constexpr float BEEP_MAX_GAP_S = 0.65f;  // pauze net boven de oranje drempel
-constexpr float BEEP_MIN_GAP_S = 0.08f;  // pauze bij een heel sterk signaal
+// Tempo (tijd van ping tot ping): oranje rustig, rood sneller dan oranje maar
+// niet ratelend. Binnen elke kleur iets sneller naarmate het signaal sterker is.
+constexpr float BEEP_ORANGE_SLOW_S = 1.10f;  // net boven oranje
+constexpr float BEEP_ORANGE_FAST_S = 0.80f;  // net onder rood
+constexpr float BEEP_RED_SLOW_S    = 0.55f;  // net boven rood
+constexpr float BEEP_RED_FAST_S    = 0.38f;  // bij BEEP_TOP_DB en hoger
+constexpr float BEEP_MAX_GAP_S = BEEP_ORANGE_SLOW_S;  // (geluidstest: van traag…
+constexpr float BEEP_MIN_GAP_S = BEEP_RED_FAST_S;     // …naar snel)
 constexpr float BEEP_TOP_DB    = 50.0f;  // hier is het tempo maximaal
 constexpr int   BEEP_F_START   = 1300;   // blip glijdt omhoog van…
 constexpr int   BEEP_F_END     = 1900;   // …naar deze toon (Hz)
@@ -124,7 +167,9 @@ constexpr int   N_VOLUME        = 4;
 constexpr int   DEFAULT_VOLUME  = 3;     // Hard
 constexpr float SOUND_TEST_S   = 4.0f;   // Sound 1 s vasthouden = geigerteller-demo
 
-constexpr float STAT_INTERVAL_S = 5.0f;  // elke zoveel s een regel in de seriële log
+constexpr float STAT_INTERVAL_S = 1.0f;  // elke zoveel s een [scan]-regel in de seriële log
+constexpr uint32_t TOP_INTERVAL_MS = 200;
+constexpr bool  LOG_FLOOR_CMP   = true;   // [cmp]-regels: oud vs nieuw ruissysteem op dezelfde metingen   // elke zoveel ms een [top]-regel (5× per seconde)
 
 // SENS_MAX = true: tijdelijk maximaal gevoelig voor een meetrit. Drempels
 // worden 10/20 dB (oranje/rood) in elke modus, en elke seconde komt er een

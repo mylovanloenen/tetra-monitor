@@ -14,11 +14,16 @@ struct State {
     int  mode;          // 0 = City, 1 = Highway
     int  volume;        // 0 = uit, 1 = zacht, 2 = middel, 3 = hard
     bool scanning;      // hartslag groen (knippert) of rood (vastgelopen/geen radio)
+    bool waterfall;     // false = meter, true = waterval (tik op het onderste deel)
 };
 void drawMain(const State& st);             // volledig opnieuw tekenen
 // Elk frame: alleen wat veranderd is wordt opnieuw getekend.
 void update(const State& st, const DetectorSnapshot& snap, bool heartbeatPhase);
 
-enum class Touch { None, City, Highway, SoundTap, SoundHold };
+enum class Touch { None, City, Highway, SoundTap, SoundHold, View };
+
+// Waterval: elke meetronde één rij (dB boven ruis per kanaal; <0 = kanaal telt
+// niet mee, bv. stoorpiek). Mag vanuit de scantaak aangeroepen worden.
+void pushWaterfallRow(const float* excessDb, const bool* masked);
 Touch pollTouch();                          // vertaalt aanrakingen naar knoppen
 }

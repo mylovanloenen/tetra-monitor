@@ -103,10 +103,19 @@ void begin() {
     xTaskCreatePinnedToCore(task, "beeper", 4096, nullptr, 2, nullptr, 1);
 }
 
-void update(int alarm, float db, float soft) {
+float lerpGap(float a, float b, float frac) {
+    frac = frac < 0 ? 0 : frac > 1 ? 1 : frac;
+    float g = a + (b - a) * frac;
+    return g < MIN_GAP_S ? MIN_GAP_S : g;
+}
+
+void update(int alarm, float db, float soft, float hard) {
     portENTER_CRITICAL(&mux);
     active = alarm > 0;
-    if (active) gapS = gapFor((db - soft) / fmaxf(BEEP_TOP_DB - soft, 1.0f));
+    if (alarm >= 2 || db >= hard)
+        gapS = lerpGap(BEEP_RED_SLOW_S, BEEP_RED_FAST_S, (db - hard) / fmaxf(BEEP_TOP_DB - hard, 1.0f));
+    else if (active)
+        gapS = lerpGap(BEEP_ORANGE_SLOW_S, BEEP_ORANGE_FAST_S, (db - soft) / fmaxf(hard - soft, 1.0f));
     portEXIT_CRITICAL(&mux);
 }
 

@@ -5,7 +5,7 @@
 namespace beeper {
 void begin();
 // Elke meetronde: alarm 0 = stil, 1/2 = piepen; db = sterkte; soft = oranje drempel.
-void update(int alarm, float db, float soft);
+void update(int alarm, float db, float soft, float hard);
 void test();          // geigerteller-demo (traag → snel) van SOUND_TEST_S
 void setVolume(float v);   // 0–1
 }
