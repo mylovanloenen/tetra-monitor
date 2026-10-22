@@ -83,7 +83,7 @@ void Detector::process(const float* rssi, const int* segStart, const int* segLen
         Chan& c = ch_[i];
         float level = !warm ? 0.0f : FLOOR_MODE == FLOOR_PERCHAN ? c.lpeak : c.peak - floorOf[i];
         // Herhaal-detectie op de losse meting van deze ronde (niet de piek-hold).
-        const float repDb = FLOOR_MODE == FLOOR_PERCHAN ? REPEAT_DB_PERCHAN : soft_ - REPEAT_BELOW_SOFT_DB;
+        const float repDb = FLOOR_MODE == FLOOR_PERCHAN ? REPEAT_DB_PERCHAN : REPEAT_DB;
         bool repeat = false;
         if (REPEAT_DETECT && warm && fresh(i) && lev_[i] >= repDb) {
             c.hits[c.hitPos] = now;

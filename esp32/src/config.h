@@ -111,9 +111,7 @@ constexpr float CFAR_QUANTILE     = 0.20f;  // …de stilste 20% (niet de mediaa
 // binnen REPEAT_WINDOW_S minstens REPEAT_HITS keer REPEAT_DB boven de ruis,
 // dan is dat een zender → oranje, ook ver onder de gewone drempel.
 constexpr bool  REPEAT_DETECT     = true;
-// Herhaal-drempel volgt de gewone oranje drempel van de rijstand: zoveel dB eronder.
-// City 31 → 25, Highway 25 → 19.
-constexpr float REPEAT_BELOW_SOFT_DB = 6.0f;
+constexpr float REPEAT_DB         = 18.0f;   // vast, in beide rijstanden (meeschuiven met oranje: teruggedraaid)
 constexpr int   REPEAT_HITS       = 3;
 constexpr float REPEAT_WINDOW_S   = 0.30f;
 constexpr float CHAN_SMOOTH_A     = 0.20f;  // tijdmiddeling per kanaal
