@@ -12,6 +12,14 @@ TTF = os.path.join(HERE, "..", "..", "fonts")
 OUT = os.path.join(HERE, "..", "src", "fonts", "brand_fonts.h")
 ASCII = "".join(chr(c) for c in range(0x20, 0x7F))
 
+# Scherpte: de randen van kleine letters zijn half-transparante pixels; op het
+# 3,5"-scherm (165 ppi) ogen die wazig. Met een gamma < 1 worden die randpixels
+# dekkender: lettervorm blijft gelijk, maar de tekst oogt strakker.
+MONO_MAX_PX = 0           # t/m deze grootte: zonder anti-aliasing, op het pixelraster
+                          # (FreeType-hinting voor zwart-wit) → haarscherp
+EDGE_GAMMA_SMALL = 0.55   # (alleen als MONO_MAX_PX = 0)
+EDGE_GAMMA_LARGE = 0.80   # grote koppen op het opstartscherm
+
 # naam, bestand, pixelgrootte, tekens, letterafstand (zoals op de Pi)
 FONTS = [
     ("FONT_BUTTON",   "Barlow-Bold.ttf",            17, ASCII, 1.0),
@@ -35,8 +43,15 @@ def vlw(path, px, chars, spacing):
             l = t = 0
         img = Image.new("L", (max(w, 1), max(h, 1)), 0)
         if w and h:
-            ImageDraw.Draw(img).text((-l, -t), ch, font=font, fill=255, anchor="ls")
+            d = ImageDraw.Draw(img)
+            if px <= MONO_MAX_PX:
+                d.fontmode = "1"      # zwart-wit met hinting: strakke, pixel-uitgelijnde lijnen
+            d.text((-l, -t), ch, font=font, fill=255, anchor="ls")
         metrics.append(struct.pack(">7i", ord(ch), h, w, adv, -t, l, 0))
+        if w and h:
+            g = EDGE_GAMMA_SMALL if px <= 20 else EDGE_GAMMA_LARGE
+            lut = [round(255 * (v / 255) ** g) for v in range(256)]
+            img = img.point(lut)
         bitmaps.append(img.tobytes() if w and h else b"")
     head = struct.pack(">6i", len(metrics), 11, px, 0, ascent, descent)
     return head + b"".join(metrics) + b"".join(bitmaps)

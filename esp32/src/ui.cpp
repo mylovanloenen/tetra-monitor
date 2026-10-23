@@ -15,6 +15,16 @@ uint16_t blend(float a, uint32_t fg, uint32_t bg) {
     auto mix = [&](int sh) { return (int)(((fg >> sh) & 0xFF) * a + ((bg >> sh) & 0xFF) * (1 - a)); };
     return lgfx::color565(mix(16), mix(8), mix(0));
 }
+constexpr uint32_t BG_HEX = 0x0B0E12, INK_HEX = 0xE9EDF2, CHIP_HEX = 0x151A21,
+                   CHIP_LINE_HEX = 0x2A313B, MUTE_BG_HEX = 0x3A1414;
+// Kleur onder de volgende zachte randen (zie board_sc01plus.h).
+void under(uint32_t hex) {
+#if !defined(PRIOSENSE_SIM)
+    aaUnderRgb888() = hex;
+#else
+    (void)hex;
+#endif
+}
 const uint16_t BG = rgb(0x0B0E12), INK = rgb(0xE9EDF2), MUTED = rgb(0xAEB6C2),
                CHIP = rgb(0x151A21), CHIP_LINE = rgb(0x2A313B), SEG_OFF = rgb(0x1C222A),
                GREEN = rgb(0x2FBF71), GREEN_DIM = rgb(0x1E5A3A), YELLOW = rgb(0xFFD23F),
@@ -173,8 +183,12 @@ int pillWidth(const char* text, int iconPx) {
 // bg < 0 = geen eigen vlak; `under` is dan de kleur eronder (voor de
 // anti-aliasing van de tekst: het scherm kan niet teruggelezen worden).
 void drawPill(const Rect& r, const char* text, IconFn icon, int iconPx, int radius,
-              int bg, uint16_t ink, int line_, uint16_t under = BG) {
+              int bg, uint16_t ink, int line_, uint16_t under_ = BG,
+              uint32_t aroundHex = BG_HEX, uint32_t fillHex = BG_HEX) {
+    uint16_t under = under_;
+    ::ui::under(aroundHex);
     if (bg >= 0) L->fillSmoothRoundRect(r.x, r.y, r.w, r.h, radius, bg);
+    ::ui::under(bg >= 0 ? fillHex : aroundHex);       // icoon staat op het vlak
     if (line_ >= 0) L->drawRoundRect(r.x, r.y, r.w, r.h, radius, line_);
     icon(r.x + 16, r.y + (r.h - iconPx) / 2.0f, iconPx / 24.0f, ink);
     useFont(FONT_BUTTON);
@@ -184,10 +198,13 @@ void drawPill(const Rect& r, const char* text, IconFn icon, int iconPx, int radi
 }
 
 void drawMode(int mode) {
+    under(BG_HEX);
     L->fillSmoothRoundRect(chipR.x, chipR.y, chipR.w, chipR.h, 14, CHIP);
     L->drawRoundRect(chipR.x, chipR.y, chipR.w, chipR.h, 14, CHIP_LINE);
-    drawPill(cityR, "City", iconCity, 20, 10, mode == 0 ? INK : -1, mode == 0 ? BG : MUTED, -1, CHIP);
-    drawPill(highwayR, "Highway", iconHighway, 20, 10, mode == 1 ? INK : -1, mode == 1 ? BG : MUTED, -1, CHIP);
+    drawPill(cityR, "City", iconCity, 20, 10, mode == 0 ? INK : -1, mode == 0 ? BG : MUTED, -1, CHIP,
+             CHIP_HEX, INK_HEX);
+    drawPill(highwayR, "Highway", iconHighway, 20, 10, mode == 1 ? INK : -1, mode == 1 ? BG : MUTED, -1, CHIP,
+             CHIP_HEX, INK_HEX);
 }
 
 const char* const SOUND_LABEL[] = {"Sound off", "Sound low", "Sound mid", "Sound high"};
@@ -195,12 +212,15 @@ const IconFn SOUND_ICON[] = {iconSoundOff, iconSoundLevel<1>, iconSoundLevel<2>,
 
 void drawSound(int volume) {
     L->fillRect(soundR.x, soundR.y, soundR.w, soundR.h, BG);
-    if (volume <= 0) drawPill(soundR, SOUND_LABEL[0], iconSoundOff, 22, 14, MUTE_BG, MUTE_INK, RED);
-    else drawPill(soundR, SOUND_LABEL[volume], SOUND_ICON[volume], 22, 14, CHIP, INK, CHIP_LINE);
+    if (volume <= 0) drawPill(soundR, SOUND_LABEL[0], iconSoundOff, 22, 14, MUTE_BG, MUTE_INK, RED, BG,
+                              BG_HEX, MUTE_BG_HEX);
+    else drawPill(soundR, SOUND_LABEL[volume], SOUND_ICON[volume], 22, 14, CHIP, INK, CHIP_LINE, BG,
+                  BG_HEX, CHIP_HEX);
 }
 
 void drawDot(bool ok, bool phase) {
     uint16_t c = ok ? (phase ? GREEN : GREEN_DIM) : RED;
+    under(BG_HEX);
     L->fillSmoothCircle(dotR.x + 6, dotR.y + 6, 5, c);
 }
 
@@ -213,6 +233,7 @@ int segmentsLit(float level, float soft, float hard) {
 }
 
 void drawSegments(int lit) {
+    under(BG_HEX);
     float segW = (W - 2 * M - (N_SEG - 1) * SEG_GAP) / (float)N_SEG;
     for (int i = 0; i < N_SEG; ++i) {
         uint16_t c = i >= lit ? SEG_OFF : i < 3 ? GREEN : i < 6 ? YELLOW : RED;
@@ -223,6 +244,7 @@ void drawSegments(int lit) {
 
 // Het priosense-logo: punt met drie zendbogen (draw_brand_mark).
 void brandMark(float cx, float cy, float s, uint32_t colorHex) {
+    under(BG_HEX);
     uint16_t color = rgb(colorHex);
     struct { float r, w, a; } arcs[] = {{9.6f, 3.52f, 1.0f}, {17.28f, 2.75f, 0.765f}, {24.96f, 1.98f, 0.53f}};
     for (auto& a : arcs) {
@@ -291,6 +313,7 @@ void splash(float pct, const char* text) {
 
     if (pct >= 0) {
         const int bw = W - 2 * m, bh = 4, by = H - 52;
+        under(BG_HEX);
         L->fillSmoothRoundRect(m, by, bw, bh, bh / 2, CHIP_LINE);
         if (pct > 0) L->fillSmoothRoundRect(m, by, max(bh, (int)(bw * fminf(1, pct))), bh, bh / 2, BLUE);
         if (text) {

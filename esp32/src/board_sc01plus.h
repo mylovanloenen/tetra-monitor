@@ -5,8 +5,24 @@
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 
+// Kleur onder zachte (anti-aliased) randen. Het scherm kan niet teruggelezen
+// worden (geen RD-pin), en dan mengde LovyanGFX de randen met zwart: een dun
+// zwart randje om knoppen en balken. De UI zet hier de kleur eronder neer.
+inline uint32_t& aaUnderRgb888() { static uint32_t c = 0x0B0E12; return c; }
+
+class Panel_ST7796_AA : public lgfx::Panel_ST7796 {
+public:
+    void writeFillRectAlphaPreclipped(uint_fast16_t x, uint_fast16_t y, uint_fast16_t w,
+                                      uint_fast16_t h, uint32_t argb) override {
+        uint32_t a = argb >> 24, u = aaUnderRgb888();
+        auto mix = [&](int sh) { return (((argb >> sh) & 0xFF) * a + ((u >> sh) & 0xFF) * (255 - a)) / 255; };
+        uint16_t c = ((mix(16) & 0xF8) << 8) | ((mix(8) & 0xFC) << 3) | (mix(0) >> 3);
+        writeFillRectPreclipped(x, y, w, h, (uint16_t)((c >> 8) | (c << 8)));   // paneel: 565, bytes omgedraaid
+    }
+};
+
 class LGFX_SC01Plus : public lgfx::LGFX_Device {
-    lgfx::Panel_ST7796  panel_;
+    Panel_ST7796_AA     panel_;
     lgfx::Bus_Parallel8 bus_;
     lgfx::Light_PWM     light_;
     lgfx::Touch_FT5x06  touch_;
@@ -60,7 +76,10 @@ public:
             cfg.x_max = 319;
             cfg.y_min = 0;
             cfg.y_max = 479;
-            cfg.pin_int = 7;
+            // INT (GPIO 7) niet gebruiken: na opstarten staat de FT6336 soms in
+            // "trigger"-stand (korte puls per aanraking); die puls werd gemist en
+            // dan reageerde touch pas na een tijdje. Altijd uitlezen werkt meteen.
+            cfg.pin_int = -1;
             cfg.bus_shared = false;
             cfg.offset_rotation = 0;
             cfg.i2c_port = 1;
